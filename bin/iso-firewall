@@ -15,6 +15,9 @@
 # Usage:
 #   iso-firewall            reconcile now (apply if changed)
 #   iso-firewall --dry-run  report what WOULD change; exit 10 if changes pending
+#   iso-firewall --quiet     suppress progress + the per-entry diff (errors still
+#                            print to stderr); used by the iso-claude/iso-shell
+#                            bootstrap so a cold start doesn't dump ~300 lines.
 #
 # Exit codes: 0 ok (applied or already in sync) · 10 changes pending (dry-run)
 #             1 error (aborted, live set untouched)
@@ -30,7 +33,20 @@ TMPSET=allowed-domains-tmp
 REQUIRED_DOMAIN="api.anthropic.com" # losing this breaks Claude — never wipe it on a DNS blip
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+QUIET=0
+for arg in "$@"; do
+  case "$arg" in
+  --dry-run) DRY_RUN=1 ;;
+  -q | --quiet) QUIET=1 ;;
+  *)
+    echo "iso-firewall: unknown argument: $arg" >&2
+    exit 2
+    ;;
+  esac
+done
+# log() prints informational progress to stdout unless --quiet; errors/warnings
+# always go straight to stderr and are never suppressed.
+log() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 exec_root() { dc exec -T --user 0 "$SERVICE" "$@"; }
@@ -43,7 +59,7 @@ normalize() { sed 's#/32$##' | sort -u; }
 }
 
 # --- 1. Compute the desired set on the host -------------------------------
-echo "iso-firewall: resolving allowlist on host…"
+log "iso-firewall: resolving allowlist on host…"
 
 CIDR_RE='^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$'
 
@@ -139,16 +155,18 @@ n_add=$(printf '%s' "$ADDED" | grep -c . || true)
 n_rm=$(printf '%s' "$REMOVED" | grep -c . || true)
 
 if [ "$n_add" -eq 0 ] && [ "$n_rm" -eq 0 ]; then
-  echo "iso-firewall: UNCHANGED ($n_desired entries)"
+  log "iso-firewall: UNCHANGED ($n_desired entries)"
   exit 0
 fi
 
-echo "iso-firewall: CHANGED (+$n_add -$n_rm → $n_desired entries)"
-[ "$n_add" -gt 0 ] && printf '  + %s\n' $ADDED
-[ "$n_rm" -gt 0 ] && printf '  - %s\n' $REMOVED
+log "iso-firewall: CHANGED (+$n_add -$n_rm → $n_desired entries)"
+if [ "$QUIET" != 1 ]; then
+  [ "$n_add" -gt 0 ] && printf '  + %s\n' $ADDED
+  [ "$n_rm" -gt 0 ] && printf '  - %s\n' $REMOVED
+fi
 
 if [ "$DRY_RUN" = 1 ]; then
-  echo "iso-firewall: dry-run — not applied"
+  log "iso-firewall: dry-run — not applied"
   exit 10
 fi
 
@@ -168,4 +186,4 @@ if [ "$VERIFY" != "$DESIRED" ]; then
   diff <(printf '%s\n' "$DESIRED") <(printf '%s\n' "$VERIFY") >&2 || true
   exit 1
 fi
-echo "iso-firewall: verified ($n_desired entries)"
+log "iso-firewall: verified ($n_desired entries)"

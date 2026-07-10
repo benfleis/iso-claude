@@ -176,6 +176,15 @@ tighten containment at the cost of per-IP flapping for that provider. See
 - **CDN breadth vs. precision.** With the `@cdn` directives on, egress reaches
   anything on those CDNs. That's a deliberate reliability/containment trade — the
   tight-and-reliable fix is below.
+- **Don't run `/login` inside the sandbox.** Auth here is the
+  `CLAUDE_CODE_OAUTH_TOKEN` env token. A `/login` writes a stored credential to
+  `/workspace/.claude/.credentials.json`, which Claude *prefers over the env
+  token* — and once it expires it can't refresh (the refresh endpoint isn't on
+  the allowlist), so Claude 401s with "Please run /login" and never falls back
+  to the still-valid token. `iso-claude` guards against this: on each launch it
+  moves any such stored credential aside (to `….credentials.json.shadowed-*.bak`)
+  so the token always wins. If you ever see a 401 login prompt, a stale stored
+  credential is the usual cause.
 
 ## Future work
 
