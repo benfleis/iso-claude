@@ -6,6 +6,15 @@ set -euo pipefail
 SERVICE=claude
 COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
 
+# Source the SAME env as iso-claude so our view of the compose config (notably
+# CLAUDE_WORK_DIR) matches. If it drifted, `up -d` below would look like a config
+# change and RECREATE the container — killing any running iso-claude session.
+[[ -f "$HOME/.config/iso-claude/.env" ]] && source "$HOME/.config/iso-claude/.env"
+
+# Pre-create the bind-mount dirs on the HOST so Docker doesn't root-create them.
+mkdir -p "${CLAUDE_WORK_DIR:-$HOME/iso-claude-workspace}"
+mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.config/iso-claude/state}"
+
 # Make sure the sandbox is up (no-op if already running).
 docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
 
@@ -17,6 +26,11 @@ if [ -z "$count" ] || [ "$count" -eq 0 ]; then
   "$COMPOSE_DIR/bin/iso-firewall" --quiet || echo "iso-shell: warning — egress reconcile failed; egress may be blocked" >&2
 fi
 
+# Forward the OAuth token if we have one, so `claude` also works inside the shell
+# (the token is no longer baked into the container — see docker-compose.yaml).
+token_arg=()
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && token_arg=(-e CLAUDE_CODE_OAUTH_TOKEN)
+
 # Drop the interactive shell to the host UID (PID 1 stayed root for the firewall).
 exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
-  exec --user "$(id -u):$(id -g)" "$SERVICE" /usr/bin/env zsh "$@"
+  exec --user "$(id -u):$(id -g)" "${token_arg[@]}" "$SERVICE" /usr/bin/env zsh "$@"

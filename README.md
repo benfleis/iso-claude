@@ -51,7 +51,7 @@ bypass-permissions mode acceptable — *given* the locked egress.
 The container is a **disposable execution jail invoked like a command**, not a
 place you live in. Persistence (tmux, shells) stays on the host; each
 `iso-claude` invocation is an independent Claude session sharing one container,
-one `/workspace` bind-mount, and one firewall.
+a `/workspace` bind-mount, a separate state mount, and one firewall.
 
 ```
 host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
@@ -90,10 +90,25 @@ host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
   (for iptables), `no-new-privileges: true`, sessions run as your host UID
   (root is only PID 1, needed to install the firewall at boot).
 
+### State, dotfiles & persistence
+
+The in-container user is **`iso-claude`** (uid 1000), and `HOME` is its real
+home `/home/iso-claude` — so the image's dotfiles and toolchains (cargo, uv,
+rustup, the zsh prompt) resolve normally. Two things are decoupled from `HOME`:
+
+- **Claude's durable state** (config, auth, project trust, history, sessions)
+  is redirected via `CLAUDE_CONFIG_DIR` to a **separate mount**
+  (`$CLAUDE_STATE_DIR` → `/home/iso-claude/.claude-state`), so it survives
+  rebuilds and stays out of your project files. `/workspace` holds *only* your
+  code.
+- **Your personal shell config** lives in the bind-mounted workspace as
+  `/workspace/.zshenv-local` and `/workspace/.zshrc-local`, sourced by the baked
+  dotfiles if present — persistent and host-editable without rebuilding.
+
 ## Layout
 
 | File | Role |
-|------|------|
+| ------ | ------ |
 | `docker-compose.yaml` | Service definition, capabilities, hardening, bind-mount |
 | `Dockerfile` | `node:22` base + build toolchain + Claude Code + firewall scaffolding |
 | `entrypoint.sh` | Runs `init-firewall.sh` as root at boot, then idles |
@@ -102,11 +117,12 @@ host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
 | `bin/iso-claude` | Launch a Claude session in the sandbox |
 | `bin/iso-shell` | Drop into an interactive shell in the sandbox |
 | `allowlist.conf` | The egress allowlist (host-editable) |
-| `.env-example` | Copy to `.env`; sets `CLAUDE_WORK_DIR` |
+| `.env-example` | Copy to `.env`; sets `CLAUDE_WORK_DIR` / `CLAUDE_STATE_DIR` |
 
 ## Usage
 
 **Setup**
+
 ```bash
 cp .env-example .env            # set CLAUDE_WORK_DIR etc. for your machine
 docker compose build
@@ -133,15 +149,30 @@ Account → Active sessions), then confirm it's dead with
 Anthropic support if it still works.
 
 **Run** (put `bin/` on your `PATH`, or call by path)
+
 ```bash
 iso-claude                      # a Claude session in the jail
 iso-claude -p "…"               # non-interactive
 iso-shell                       # interactive shell in the jail
 ```
+
 Both wrappers bring the container up, populate the allowlist if empty, and drop
 you in as your own UID.
 
+**Unattended ("YOLO") mode.** To skip permission prompts, pass
+`--dangerously-skip-permissions` (it rides through the wrapper's `"$@"`):
+
+```bash
+iso-claude --dangerously-skip-permissions
+```
+
+To make it the default, uncomment the YOLO `exec` line in `bin/iso-claude`
+(and comment the default one). This is only defensible because egress is
+allowlist-locked and the session is contained — see [Goal](#goal) and
+[Caveats](#caveats). Don't point it at adversarial content.
+
 **Manage the allowlist**
+
 ```bash
 $EDITOR allowlist.conf          # add/remove entries
 iso-firewall                    # reconcile (live; sessions keep running)
@@ -177,8 +208,8 @@ tighten containment at the cost of per-IP flapping for that provider. See
   anything on those CDNs. That's a deliberate reliability/containment trade — the
   tight-and-reliable fix is below.
 - **Don't run `/login` inside the sandbox.** Auth here is the
-  `CLAUDE_CODE_OAUTH_TOKEN` env token. A `/login` writes a stored credential to
-  `/workspace/.claude/.credentials.json`, which Claude *prefers over the env
+  `CLAUDE_CODE_OAUTH_TOKEN` env token. A `/login` writes a stored credential into
+  Claude's state dir (`$CLAUDE_CONFIG_DIR/.credentials.json`), which Claude *prefers over the env
   token* — and once it expires it can't refresh (the refresh endpoint isn't on
   the allowlist), so Claude 401s with "Please run /login" and never falls back
   to the still-valid token. `iso-claude` guards against this: on each launch it

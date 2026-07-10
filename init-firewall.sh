@@ -38,10 +38,17 @@ else
 fi
 
 # Base allowances (needed before the default-DROP policy bites).
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT # outbound DNS
-iptables -A INPUT -p udp --sport 53 -j ACCEPT  # DNS responses
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT # outbound SSH
-iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+# DNS is scoped to the resolver(s) named in /etc/resolv.conf (normally Docker's
+# embedded 127.0.0.11), not the whole internet — a blanket udp/53 is a direct
+# channel to any nameserver. Outbound SSH is intentionally NOT opened: git over
+# SSH to an allowlisted host (e.g. github) is already covered by the
+# allowed-domains match below, so a blanket tcp/22 would only add an exfil path.
+for ns in $(awk '/^nameserver/{print $2}' /etc/resolv.conf); do
+  iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
+  iptables -A INPUT -p udp -s "$ns" --sport 53 -j ACCEPT
+  iptables -A INPUT -p tcp -s "$ns" --sport 53 -j ACCEPT
+done
 iptables -A INPUT -i lo -j ACCEPT # loopback
 iptables -A OUTPUT -o lo -j ACCEPT
 
@@ -69,5 +76,18 @@ iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
+
+# IPv6: there is no v6 allowlist, and the default ip6tables policy is ACCEPT, so
+# without this the entire v4 allowlist is bypassable the moment the bridge gains
+# a v6 address. Deny all v6 except loopback. Guarded so a kernel without v6
+# support (where ip6tables can't read the table) is skipped rather than aborting.
+if command -v ip6tables >/dev/null 2>&1 && ip6tables -L -n >/dev/null 2>&1; then
+  ip6tables -F
+  ip6tables -P INPUT DROP
+  ip6tables -P FORWARD DROP
+  ip6tables -P OUTPUT DROP
+  ip6tables -A INPUT -i lo -j ACCEPT
+  ip6tables -A OUTPUT -o lo -j ACCEPT
+fi
 
 echo "Firewall scaffolding installed (allowlist empty until first reconcile)."

@@ -11,9 +11,11 @@ COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
     exit 1
 }
 
-# Create the work dir on the HOST first, so Docker doesn't auto-create it as
-# root (which would break $HOME=/workspace and trap Claude in a login loop).
+# Create the work dir AND Claude's state dir on the HOST first, so Docker doesn't
+# auto-create them as root (root-owned mounts break access and trap Claude in a
+# login loop). Both are bind-mounted by docker-compose.yaml.
 mkdir -p "${CLAUDE_WORK_DIR:-$HOME/iso-claude-workspace}"
+mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.config/iso-claude/state}"
 
 # Make sure the sandbox is up (no-op if already running).
 docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
@@ -29,17 +31,17 @@ if [ -z "$count" ] || [ "$count" -eq 0 ]; then
 fi
 
 # Guard against stale interactive-login credentials shadowing the token.
-# A `/login` run *inside* the sandbox writes /workspace/.claude/.credentials.json,
-# which Claude PREFERS over CLAUDE_CODE_OAUTH_TOKEN — even after it expires. Its
-# refresh endpoint isn't on the egress allowlist, so once expired it just 401s
-# ("Please run /login") and never falls back to the token. This sandbox always
-# authenticates via the token, so any stored login credential is wrong here:
-# move it aside (self-healing, non-destructive) so the token is used.
+# A `/login` run *inside* the sandbox writes a .credentials.json into Claude's
+# config dir, which Claude PREFERS over CLAUDE_CODE_OAUTH_TOKEN — even after it
+# expires. Its refresh endpoint isn't on the egress allowlist, so once expired it
+# just 401s ("Please run /login") and never falls back to the token. This sandbox
+# always authenticates via the token, so any stored login credential is wrong
+# here: move it aside (self-healing, non-destructive) so the token is used.
 # (exits 0 only when it actually moved a credential, so the notice is accurate;
 #  "nothing to do" and any exec failure both exit non-zero → stay silent.)
 if docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
     exec -T --user "$(id -u):$(id -g)" "$SERVICE" bash -c '
-        cred=/workspace/.claude/.credentials.json
+        cred=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json
         [ -f "$cred" ] || exit 1
         mv "$cred" "$cred.shadowed-$(date +%s).bak"
     ' 2>/dev/null; then
@@ -49,5 +51,12 @@ fi
 # Hand off to claude inside it, passing along any args you typed.
 # --user drops the session to the host UID (PID 1 stayed root for the firewall).
 # -e forwards the token fresh on every exec (immune to stale container env).
+#
+# YOLO mode: to run unattended with no permission prompts, add
+# --dangerously-skip-permissions. Comment the line below and uncomment this one.
+# Only defensible because egress is allowlist-locked and the session can't escape
+# the container — never point it at adversarial content (see README caveats).
+# exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+#     exec --user "$(id -u):$(id -g)" -e CLAUDE_CODE_OAUTH_TOKEN "$SERVICE" claude --dangerously-skip-permissions "$@"
 exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
     exec --user "$(id -u):$(id -g)" -e CLAUDE_CODE_OAUTH_TOKEN "$SERVICE" claude "$@"

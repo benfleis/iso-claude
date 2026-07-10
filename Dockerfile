@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   zsh \
   man-db \
   unzip \
+  zip \
   gnupg2 \
   gh \
   iptables \
@@ -28,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   fd-find \
   ripgrep \
   cmake \
+  ninja-build \
   g++ \
   clang \
   lldb \
@@ -38,14 +40,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   curl \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# astral uv On macOS and Linux.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# The node:22 base ships a uid/gid 1000 "node" user; rename it to iso-claude
+# (uid/gid stay 1000, matching the host user that sessions exec as). Everything
+# below refers to /home/iso-claude accordingly.
+RUN usermod -l iso-claude -d /home/iso-claude -m node \
+  && groupmod -n iso-claude node
 
-# Ensure default node user has access to /usr/local/share
+# Ensure the iso-claude user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
-  chown -R node:node /usr/local/share
+  chown -R iso-claude:iso-claude /usr/local/share
 
-ARG USERNAME=node
+ARG USERNAME=iso-claude
 
 # Persist bash history.
 RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
@@ -56,9 +61,10 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 # Set `DEVCONTAINER` environment variable to help with orientation
 ENV DEVCONTAINER=true
 
-# Create workspace and config directories and set permissions
-RUN mkdir -p /workspace /home/node/.claude && \
-  chown -R node:node /workspace /home/node/.claude
+# Create the workspace mountpoint and the Claude state-dir mountpoint
+# (CLAUDE_CONFIG_DIR — see docker-compose.yaml), then set ownership.
+RUN mkdir -p /workspace /home/iso-claude/.claude-state && \
+  chown -R iso-claude:iso-claude /workspace /home/iso-claude
 
 WORKDIR /workspace
 
@@ -69,7 +75,7 @@ RUN ARCH=$(dpkg --print-architecture) && \
   rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
 
 # Set up non-root user
-USER node
+USER iso-claude
 
 # Install global packages
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
@@ -92,6 +98,22 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
+# astral uv On macOS and Linux.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# rustup
+RUN curl -LsSf https://sh.rustup.rs | sh -s -- -y --verbose
+
+# Put the user-local toolchains (cargo, uv) on PATH for NON-login sessions too —
+# Claude's own shell runs `claude` directly and never sources ~/.zshenv.
+ENV PATH=$PATH:/home/iso-claude/.cargo/bin:/home/iso-claude/.local/bin
+
+# Source personal/project shell config from the bind-mounted workspace, so it
+# persists and stays host-editable instead of being baked in; and keep zsh
+# history in the workspace too (HOME is /home/iso-claude, which is not mounted).
+RUN printf '\n[ -f /workspace/.zshenv-local ] && source /workspace/.zshenv-local\n' >> /home/iso-claude/.zshenv \
+  && printf '\n[ -f /workspace/.zshrc-local ] && source /workspace/.zshrc-local\nexport HISTFILE=/workspace/.zsh_history\n' >> /home/iso-claude/.zshrc
+
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
@@ -104,4 +126,4 @@ RUN chmod +x /usr/local/bin/init-firewall.sh
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER node
+USER iso-claude

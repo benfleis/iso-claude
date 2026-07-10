@@ -12,11 +12,20 @@ services:
 
     volumes:
       - "${CLAUDE_WORK_DIR:-${HOME}/iso-claude-workspace}:/workspace"
+      # Claude's durable state (config, auth, project trust, history, sessions)
+      # lives on its own mount, NOT in /workspace — keeps the workspace clean and
+      # survives rebuilds. See CLAUDE_CONFIG_DIR below.
+      - "${CLAUDE_STATE_DIR:-${HOME}/.config/iso-claude/state}:/home/iso-claude/.claude-state"
     working_dir: /workspace
 
     environment:
-      - HOME=/workspace
-      - CLAUDE_CODE_OAUTH_TOKEN        # passthrough: no value = take from host shell
+      # HOME is the iso-claude user's real home (image-baked dotfiles + toolchains
+      # resolve normally); Claude's state is redirected out to the mount above.
+      - HOME=/home/iso-claude
+      - CLAUDE_CONFIG_DIR=/home/iso-claude/.claude-state
+      # The OAuth token (CLAUDE_CODE_OAUTH_TOKEN) is deliberately NOT declared here. 
+      # A compose-level passthrough becomes container config, and can force rebuilds.
+      # Instead rely on per session wrappers using -e CLAUDE_CODE_OAUTH_TOKEN 
 
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]
