@@ -9,6 +9,13 @@ COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
 # Make sure the sandbox is up (no-op if already running).
 docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
 
+# Populate the egress allowlist if a fresh `up` left it empty (fail-closed).
+count=$(docker compose -f "$COMPOSE_DIR/docker-compose.yaml" exec -T --user 0 "$SERVICE" \
+  ipset list allowed-domains 2>/dev/null | awk '/^Number of entries:/{print $4}' || true)
+if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+  "$COMPOSE_DIR/bin/iso-firewall" || echo "iso-shell: warning — egress reconcile failed; egress may be blocked" >&2
+fi
+
 # Drop the interactive shell to the host UID (PID 1 stayed root for the firewall).
 exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
   exec --user "$(id -u):$(id -g)" "$SERVICE" /usr/bin/env zsh "$@"

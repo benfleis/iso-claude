@@ -11,7 +11,7 @@ services:
     user: "0:0"
 
     volumes:
-      - "${CLAUDE_WORK_DIR:-${HOME}/iso-claude-work}:/workspace"
+      - "${CLAUDE_WORK_DIR:-${HOME}/iso-claude-workspace}:/workspace"
     working_dir: /workspace
 
     environment:

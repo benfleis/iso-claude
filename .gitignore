@@ -1,1 +1,6 @@
 .env
+*.env
+tmp/
+local/
+*.bak
+.claude.json
