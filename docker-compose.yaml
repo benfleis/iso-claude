@@ -1,0 +1,25 @@
+services:
+  claude:
+    build: .
+    image: iso-claude
+    container_name: iso-claude
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    command: ["sleep", "infinity"]
+
+    # PID 1 (the entrypoint) MUST run as root so it can install the firewall.
+    # Sessions get the host UID via `--user` on `docker compose exec` (see bin/).
+    user: "0:0"
+
+    volumes:
+      - "${CLAUDE_WORK_DIR:-${HOME}/iso-claude-work}:/workspace"
+    working_dir: /workspace
+
+    environment:
+      - HOME=/workspace
+      - CLAUDE_CODE_OAUTH_TOKEN        # passthrough: no value = take from host shell
+
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

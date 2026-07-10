@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+# iso-bash — run claude inside the standing sandbox container.
+set -euo pipefail
+
+SERVICE=claude
+COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
+
+# Make sure the sandbox is up (no-op if already running).
+docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
+
+# Drop the interactive shell to the host UID (PID 1 stayed root for the firewall).
+exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+  exec --user "$(id -u):$(id -g)" "$SERVICE" /usr/bin/env zsh "$@"

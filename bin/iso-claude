@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# iso-claude — run claude inside the standing sandbox container.
+set -euo pipefail
+
+SERVICE=claude
+COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
+
+[[ -f "$HOME/.config/iso-claude/.env" ]] && source "$HOME/.config/iso-claude/.env"
+[[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && {
+  echo "CLAUDE_CODE_OAUTH_TOKEN not found." >&2
+  exit 1
+}
+
+# Create the work dir on the HOST first, so Docker doesn't auto-create it as
+# root (which would break $HOME=/workspace and trap Claude in a login loop).
+mkdir -p "${CLAUDE_WORK_DIR:-$HOME/iso-claude-work}"
+
+# Make sure the sandbox is up (no-op if already running).
+docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
+
+# Hand off to claude inside it, passing along any args you typed.
+# --user drops the session to the host UID (PID 1 stayed root for the firewall).
+# -e forwards the token fresh on every exec (immune to stale container env).
+exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+  exec --user "$(id -u):$(id -g)" -e CLAUDE_CODE_OAUTH_TOKEN "$SERVICE" claude "$@"
