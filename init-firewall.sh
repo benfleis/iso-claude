@@ -55,16 +55,22 @@ iptables -A OUTPUT -o lo -j ACCEPT
 # Empty allowlist set — populated later by the host reconcile (iso-firewall).
 ipset create allowed-domains hash:net family inet
 
-# Allow traffic to/from the host's own /24 (Docker bridge, host services).
+# Allow traffic to/from the host gateway only (not the whole /24 — that would
+# open unrestricted access to every other container or host process sharing
+# the bridge subnet, silently widening the "allowlist only" guarantee).
 HOST_IP=$(ip route | grep default | cut -d" " -f3)
 if [ -z "$HOST_IP" ]; then
   echo "ERROR: Failed to detect host IP"
   exit 1
 fi
-HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
-echo "Host network detected as: $HOST_NETWORK"
-iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
-iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+if [ "$(printf '%s\n' "$HOST_IP" | wc -l)" -gt 1 ]; then
+  echo "ERROR: multiple default routes detected — refusing to guess which is the host gateway. Fix the routing table (or this script) before continuing:" >&2
+  printf '%s\n' "$HOST_IP" >&2
+  exit 1
+fi
+echo "Host gateway detected as: $HOST_IP"
+iptables -A INPUT -s "$HOST_IP" -j ACCEPT
+iptables -A OUTPUT -d "$HOST_IP" -j ACCEPT
 
 # Default-deny.
 iptables -P INPUT DROP
@@ -77,17 +83,26 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
-# IPv6: there is no v6 allowlist, and the default ip6tables policy is ACCEPT, so
-# without this the entire v4 allowlist is bypassable the moment the bridge gains
-# a v6 address. Deny all v6 except loopback. Guarded so a kernel without v6
-# support (where ip6tables can't read the table) is skipped rather than aborting.
-if command -v ip6tables >/dev/null 2>&1 && ip6tables -L -n >/dev/null 2>&1; then
-  ip6tables -F
-  ip6tables -P INPUT DROP
-  ip6tables -P FORWARD DROP
-  ip6tables -P OUTPUT DROP
-  ip6tables -A INPUT -i lo -j ACCEPT
-  ip6tables -A OUTPUT -o lo -j ACCEPT
+# IPv6: there is no v6 allowlist, and the kernel's default ip6tables policy is
+# ACCEPT, so without an explicit deny the entire v4 allowlist is bypassable the
+# moment the bridge gains a v6 address.
+#
+# Set the DROP policy FIRST, before touching anything else, so that any
+# failure partway through this block still leaves v6 fail-closed rather than
+# kernel-default ACCEPT. A kernel with no v6 support at all (ip6tables binary
+# absent) is skipped, since there's nothing to block — but if the binary
+# exists and any step here fails, that's a real containment gap: fail loudly
+# instead of silently continuing with ACCEPT (previously, a broken/permission
+# -denied liveness probe here would skip the whole block silently).
+if command -v ip6tables >/dev/null 2>&1; then
+  ip6tables -P INPUT DROP || { echo "ERROR: ip6tables present but failed to set INPUT DROP policy — aborting rather than leaving v6 ACCEPT-by-default." >&2; exit 1; }
+  ip6tables -P FORWARD DROP || { echo "ERROR: ip6tables present but failed to set FORWARD DROP policy — aborting rather than leaving v6 ACCEPT-by-default." >&2; exit 1; }
+  ip6tables -P OUTPUT DROP || { echo "ERROR: ip6tables present but failed to set OUTPUT DROP policy — aborting rather than leaving v6 ACCEPT-by-default." >&2; exit 1; }
+  ip6tables -F || { echo "ERROR: ip6tables present but failed to flush existing v6 rules." >&2; exit 1; }
+  ip6tables -A INPUT -i lo -j ACCEPT || { echo "ERROR: ip6tables present but failed to allow v6 loopback (INPUT)." >&2; exit 1; }
+  ip6tables -A OUTPUT -o lo -j ACCEPT || { echo "ERROR: ip6tables present but failed to allow v6 loopback (OUTPUT)." >&2; exit 1; }
+else
+  echo "ip6tables not found; assuming this kernel has no IPv6 support (nothing to block)."
 fi
 
 echo "Firewall scaffolding installed (allowlist empty until first reconcile)."

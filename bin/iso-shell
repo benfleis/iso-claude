@@ -6,6 +6,15 @@ set -euo pipefail
 SERVICE=claude
 COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
 
+# Refuse to run as root: `exec --user` below is derived straight from our own
+# uid/gid, and the container grants NET_ADMIN/NET_RAW to its bounding set.
+# Root here would become container-UID-0, which inherits those caps for free
+# and could flush/edit the egress firewall from inside the sandboxed shell.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "iso-shell: refusing to run as root (would leak NET_ADMIN/NET_RAW into the sandboxed session). Run as a normal user." >&2
+    exit 1
+fi
+
 # Source the SAME env as iso-claude so our view of the compose config (notably
 # CLAUDE_WORK_DIR) matches. If it drifted, `up -d` below would look like a config
 # change and RECREATE the container — killing any running iso-claude session.

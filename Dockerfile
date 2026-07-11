@@ -99,10 +99,30 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -x
 
 # astral uv On macOS and Linux.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# Pinned to a specific version URL (astral's documented pinning mechanism —
+# same pattern as GIT_DELTA_VERSION/ZSH_IN_DOCKER_VERSION above) instead of the
+# mutable /uv/install.sh "latest" endpoint, so the fetched script content is
+# tied to a released version rather than whatever astral.sh serves today.
+ARG UV_VERSION=0.11.28
+RUN curl --proto '=https' --tlsv1.2 -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
 
-# rustup
-RUN curl -LsSf https://sh.rustup.rs | sh -s -- -y --verbose
+# rustup — the sh.rustup.rs bootstrapper isn't independently version-pinnable,
+# so fetch the platform rustup-init binary directly from the versioned archive
+# and verify it against its published sha256 instead of piping the bootstrap
+# script.
+ARG RUSTUP_VERSION=1.29.0
+RUN ARCH=$(dpkg --print-architecture) && \
+  case "$ARCH" in \
+    amd64) RUST_TARGET=x86_64-unknown-linux-gnu ;; \
+    arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;; \
+    *) echo "no pinned rustup-init target mapped for dpkg arch '$ARCH'" >&2; exit 1 ;; \
+  esac && \
+  curl --proto '=https' --tlsv1.2 -sSfO "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init" && \
+  curl --proto '=https' --tlsv1.2 -sSfO "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init.sha256" && \
+  sha256sum -c rustup-init.sha256 && \
+  chmod +x rustup-init && \
+  ./rustup-init -y --verbose --default-toolchain stable && \
+  rm rustup-init rustup-init.sha256
 
 # Put the user-local toolchains (cargo, uv) on PATH for NON-login sessions too —
 # Claude's own shell runs `claude` directly and never sources ~/.zshenv.

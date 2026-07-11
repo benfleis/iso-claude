@@ -31,4 +31,20 @@ services:
     cap_add: [NET_ADMIN, NET_RAW]
     security_opt:
       - no-new-privileges:true
+
+    # Guardrails, not throttles — the intent is still to let sessions use
+    # most/all of the box's resources. pids_limit only catches pathological
+    # cases (fork bombs); no real build/test run spawns thousands of
+    # concurrent processes. mem_limit is deliberately loose (small buffer
+    # below total host RAM) rather than a real cap: without it, an OOM is
+    # handled by the HOST kernel's OOM killer, which can pick anything on the
+    # box (sshd, dockerd, iso-firewall's reconcile); with it, the container's
+    # own cgroup OOM killer fires first and only kills processes inside the
+    # sandbox. Kept loose because debug/ASan duckdb builds are known to be
+    # memory-hungry at link time (mold was adopted specifically to make that
+    # fit in RAM) — if a real build ever gets OOM-killed (exit 137) under this
+    # cap, raise it further or drop it rather than assuming the build is at fault.
+    pids_limit: 4096
+    mem_limit: 13.5g
+
     restart: unless-stopped
