@@ -22,7 +22,7 @@ fi
 
 # Pre-create the bind-mount dirs on the HOST so Docker doesn't root-create them.
 mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
-mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.config/iso-claude/state}"
+mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.local/state/iso-claude}"
 
 # Make sure the sandbox is up (no-op if already running).
 docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null

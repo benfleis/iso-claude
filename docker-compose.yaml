@@ -18,7 +18,7 @@ services:
       # Claude's durable state (config, auth, project trust, history, sessions)
       # lives on its own mount, NOT in /opt/workspace — keeps the workspace clean
       # and survives rebuilds. See CLAUDE_CONFIG_DIR below.
-      - "${CLAUDE_STATE_DIR:-${HOME}/.config/iso-claude/state}:/home/iso-claude/.claude-state"
+      - "${CLAUDE_STATE_DIR:-${HOME}/.local/state/iso-claude}:/home/iso-claude/.claude-state"
     working_dir: /opt/workspace
 
     environment:

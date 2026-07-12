@@ -24,7 +24,7 @@ fi
 # auto-create them as root (root-owned mounts break access and trap Claude in a
 # login loop). Both are bind-mounted by docker-compose.yaml.
 mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
-mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.config/iso-claude/state}"
+mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.local/state/iso-claude}"
 
 # Make sure the sandbox is up (no-op if already running).
 docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
