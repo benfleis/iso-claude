@@ -51,7 +51,7 @@ bypass-permissions mode acceptable — *given* the locked egress.
 The container is a **disposable execution jail invoked like a command**, not a
 place you live in. Persistence (tmux, shells) stays on the host; each
 `iso-claude` invocation is an independent Claude session sharing one container,
-a `/workspace` bind-mount, a separate state mount, and one firewall.
+a `/opt/workspace` bind-mount, a separate state mount, and one firewall.
 
 ```
 host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
@@ -99,11 +99,12 @@ rustup, the zsh prompt) resolve normally. Two things are decoupled from `HOME`:
 - **Claude's durable state** (config, auth, project trust, history, sessions)
   is redirected via `CLAUDE_CONFIG_DIR` to a **separate mount**
   (`$CLAUDE_STATE_DIR` → `/home/iso-claude/.claude-state`), so it survives
-  rebuilds and stays out of your project files. `/workspace` holds *only* your
-  code.
+  rebuilds and stays out of your project files. `/opt/workspace` holds *only*
+  your code.
 - **Your personal shell config** lives in the bind-mounted workspace as
-  `/workspace/.zshenv-local` and `/workspace/.zshrc-local`, sourced by the baked
-  dotfiles if present — persistent and host-editable without rebuilding.
+  `/opt/workspace/.zshenv-local` and `/opt/workspace/.zshrc-local`, sourced by
+  the baked dotfiles if present — persistent and host-editable without
+  rebuilding.
 
 ## Layout
 
@@ -201,9 +202,9 @@ tighten containment at the cost of per-IP flapping for that provider. See
 - **Trusted repos only.** The container isolates the *host* from the agent, but
   a malicious repo could still exfiltrate container contents (including Claude's
   creds) to any allowlisted host. Don't run untrusted code in it.
-- **The bind-mount is the one deliberate hole.** `/workspace` maps to a single
-  host directory. Never widen it to `$HOME` or `/`; copy files into the work dir
-  instead.
+- **The bind-mount is the one deliberate hole.** `/opt/workspace` maps to a
+  single host directory. Never widen it to `$HOME` or `/`; copy files into the
+  work dir instead.
 - **CDN breadth vs. precision.** With the `@cdn` directives on, egress reaches
   anything on those CDNs. That's a deliberate reliability/containment trade — the
   tight-and-reliable fix is below.

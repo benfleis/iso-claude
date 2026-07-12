@@ -11,12 +11,15 @@ services:
     user: "0:0"
 
     volumes:
-      - "${CLAUDE_WORK_DIR:-${HOME}/iso-claude-workspace}:/workspace"
+      # NOTE: mapping /opt/workspace -> /opt/workspace means tools like git
+      # (which converts relative paths to absoluate, despite my efforts) work
+      # both in, and outside of the docker; a useful property :)
+      - "${CLAUDE_WORK_DIR:-/opt/workspace}:/opt/workspace"
       # Claude's durable state (config, auth, project trust, history, sessions)
-      # lives on its own mount, NOT in /workspace — keeps the workspace clean and
-      # survives rebuilds. See CLAUDE_CONFIG_DIR below.
+      # lives on its own mount, NOT in /opt/workspace — keeps the workspace clean
+      # and survives rebuilds. See CLAUDE_CONFIG_DIR below.
       - "${CLAUDE_STATE_DIR:-${HOME}/.config/iso-claude/state}:/home/iso-claude/.claude-state"
-    working_dir: /workspace
+    working_dir: /opt/workspace
 
     environment:
       # HOME is the iso-claude user's real home (image-baked dotfiles + toolchains

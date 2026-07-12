@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SERVICE=claude
-COMPOSE_DIR="$HOME/src/iso-claude" # where your docker-compose.yaml lives
+COMPOSE_DIR="/opt/workspace/src/iso-claude" # where your docker-compose.yaml lives
 
 # Refuse to run as root: `exec --user` below is derived straight from our own
 # uid/gid, and the container grants NET_ADMIN/NET_RAW to its bounding set.
@@ -23,7 +23,7 @@ fi
 # Create the work dir AND Claude's state dir on the HOST first, so Docker doesn't
 # auto-create them as root (root-owned mounts break access and trap Claude in a
 # login loop). Both are bind-mounted by docker-compose.yaml.
-mkdir -p "${CLAUDE_WORK_DIR:-$HOME/iso-claude-workspace}"
+mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
 mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.config/iso-claude/state}"
 
 # Make sure the sandbox is up (no-op if already running).

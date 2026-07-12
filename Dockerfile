@@ -63,10 +63,10 @@ ENV DEVCONTAINER=true
 
 # Create the workspace mountpoint and the Claude state-dir mountpoint
 # (CLAUDE_CONFIG_DIR — see docker-compose.yaml), then set ownership.
-RUN mkdir -p /workspace /home/iso-claude/.claude-state && \
-  chown -R iso-claude:iso-claude /workspace /home/iso-claude
+RUN mkdir -p /opt/workspace /home/iso-claude/.claude-state && \
+  chown -R iso-claude:iso-claude /opt/workspace /home/iso-claude
 
-WORKDIR /workspace
+WORKDIR /opt/workspace
 
 ARG GIT_DELTA_VERSION=0.18.2
 RUN ARCH=$(dpkg --print-architecture) && \
@@ -131,8 +131,8 @@ ENV PATH=$PATH:/home/iso-claude/.cargo/bin:/home/iso-claude/.local/bin
 # Source personal/project shell config from the bind-mounted workspace, so it
 # persists and stays host-editable instead of being baked in; and keep zsh
 # history in the workspace too (HOME is /home/iso-claude, which is not mounted).
-RUN printf '\n[ -f /workspace/.zshenv-local ] && source /workspace/.zshenv-local\n' >> /home/iso-claude/.zshenv \
-  && printf '\n[ -f /workspace/.zshrc-local ] && source /workspace/.zshrc-local\nexport HISTFILE=/workspace/.zsh_history\n' >> /home/iso-claude/.zshrc
+RUN printf '\n[ -f /opt/workspace/.zshenv-local ] && source /opt/workspace/.zshenv-local\n' >> /home/iso-claude/.zshenv \
+  && printf '\n[ -f /opt/workspace/.zshrc-local ] && source /opt/workspace/.zshrc-local\nexport HISTFILE=/opt/workspace/.zsh_history\n' >> /home/iso-claude/.zshrc
 
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
