@@ -2,42 +2,15 @@
 # iso-claude — run claude inside the standing sandbox container.
 set -euo pipefail
 
-SERVICE=claude
 COMPOSE_DIR="/opt/workspace/src/iso-claude" # where your docker-compose.yaml lives
+source "$COMPOSE_DIR/bin/iso-common.sh"
 
-# Refuse to run as root: `exec --user` below is derived straight from our own
-# uid/gid, and the container grants NET_ADMIN/NET_RAW to its bounding set.
-# Root here would become container-UID-0, which inherits those caps for free
-# and could flush/edit the egress firewall from inside the sandbox itself.
-if [ "$(id -u)" -eq 0 ]; then
-    echo "iso-claude: refusing to run as root (would leak NET_ADMIN/NET_RAW into the sandboxed session). Run as a normal user." >&2
-    exit 1
-fi
-
-[[ -f "$HOME/.config/iso-claude/.env" ]] && source "$HOME/.config/iso-claude/.env"
+iso_prepare_env "iso-claude"
 [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && {
     echo "CLAUDE_CODE_OAUTH_TOKEN not found." >&2
     exit 1
 }
-
-# Create the work dir AND Claude's state dir on the HOST first, so Docker doesn't
-# auto-create them as root (root-owned mounts break access and trap Claude in a
-# login loop). Both are bind-mounted by docker-compose.yaml.
-mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
-mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.local/state/iso-claude}"
-
-# Make sure the sandbox is up (no-op if already running).
-docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
-
-# A fresh `up` boots with an EMPTY allowlist (fail-closed → no egress) until the
-# host reconcile populates it. Populate it if empty so Claude can reach the API.
-# (Re-resolve on demand any time with `iso-firewall`.)
-count=$(docker compose -f "$COMPOSE_DIR/docker-compose.yaml" exec -T --user 0 "$SERVICE" \
-    ipset list allowed-domains 2>/dev/null | awk '/^Number of entries:/{print $4}' || true)
-if [ -z "$count" ] || [ "$count" -eq 0 ]; then
-    echo "iso-claude: populating egress allowlist (first run since boot)…" >&2
-    "$COMPOSE_DIR/bin/iso-firewall" --quiet || echo "iso-claude: warning — egress reconcile failed; egress may be blocked" >&2
-fi
+iso_ensure_running "iso-claude"
 
 # Guard against stale interactive-login credentials shadowing the token.
 # A `/login` run *inside* the sandbox writes a .credentials.json into Claude's

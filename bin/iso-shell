@@ -1,39 +1,12 @@
 #!/usr/bin/env bash
-
-# iso-bash — run claude inside the standing sandbox container.
+# iso-shell — run an interactive shell inside the standing sandbox container.
 set -euo pipefail
 
-SERVICE=claude
 COMPOSE_DIR="/opt/workspace/src/iso-claude" # where your docker-compose.yaml lives
+source "$COMPOSE_DIR/bin/iso-common.sh"
 
-# Refuse to run as root: `exec --user` below is derived straight from our own
-# uid/gid, and the container grants NET_ADMIN/NET_RAW to its bounding set.
-# Root here would become container-UID-0, which inherits those caps for free
-# and could flush/edit the egress firewall from inside the sandboxed shell.
-if [ "$(id -u)" -eq 0 ]; then
-    echo "iso-shell: refusing to run as root (would leak NET_ADMIN/NET_RAW into the sandboxed session). Run as a normal user." >&2
-    exit 1
-fi
-
-# Source the SAME env as iso-claude so our view of the compose config (notably
-# CLAUDE_WORK_DIR) matches. If it drifted, `up -d` below would look like a config
-# change and RECREATE the container — killing any running iso-claude session.
-[[ -f "$HOME/.config/iso-claude/.env" ]] && source "$HOME/.config/iso-claude/.env"
-
-# Pre-create the bind-mount dirs on the HOST so Docker doesn't root-create them.
-mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
-mkdir -p "${CLAUDE_STATE_DIR:-$HOME/.local/state/iso-claude}"
-
-# Make sure the sandbox is up (no-op if already running).
-docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
-
-# Populate the egress allowlist if a fresh `up` left it empty (fail-closed).
-count=$(docker compose -f "$COMPOSE_DIR/docker-compose.yaml" exec -T --user 0 "$SERVICE" \
-    ipset list allowed-domains 2>/dev/null | awk '/^Number of entries:/{print $4}' || true)
-if [ -z "$count" ] || [ "$count" -eq 0 ]; then
-    echo "iso-shell: populating egress allowlist (first run since boot)…" >&2
-    "$COMPOSE_DIR/bin/iso-firewall" --quiet || echo "iso-shell: warning — egress reconcile failed; egress may be blocked" >&2
-fi
+iso_prepare_env "iso-shell"
+iso_ensure_running "iso-shell"
 
 # Forward the OAuth token if we have one, so `claude` also works inside the shell
 # (the token is no longer baked into the container — see docker-compose.yaml).
