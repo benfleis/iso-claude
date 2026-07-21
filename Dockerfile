@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   man-db \
   unzip \
   zip \
+  zstd \
   gnupg2 \
   gh \
   iptables \
@@ -38,6 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   clangd \
   jq \
   curl \
+  openjdk-17-jre-headless \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # The node:22 base ships a uid/gid 1000 "node" user; rename it to iso-claude
@@ -83,6 +85,13 @@ ENV PATH=$PATH:/usr/local/share/npm-global/bin
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh
+
+# Default locale -- unset otherwise, which leaves every shell/tool in the
+# POSIX/C locale (no UTF-8), so any non-ASCII byte (e.g. an em dash) gets
+# displayed raw instead of decoded. C.UTF-8 is a minimal, always-available
+# locale (no locale-gen needed) that just adds UTF-8 awareness on top of C.
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 # Set the default editor and visual
 ENV EDITOR=vim
@@ -133,6 +142,9 @@ ENV PATH=$PATH:/home/iso-claude/.cargo/bin:/home/iso-claude/.local/bin
 # history in the workspace too (HOME is /home/iso-claude, which is not mounted).
 RUN printf '\n[ -f /opt/workspace/.zshenv-local ] && source /opt/workspace/.zshenv-local\n' >> /home/iso-claude/.zshenv \
   && printf '\n[ -f /opt/workspace/.zshrc-local ] && source /opt/workspace/.zshrc-local\nexport HISTFILE=/opt/workspace/.zsh_history\n' >> /home/iso-claude/.zshrc
+
+# Git config matters, link to the workspace
+RUN mkdir -p /home/iso-claude/.config && env -C /home/iso-claude/.config ln -sf /opt/workspace/.config/git
 
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
