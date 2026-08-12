@@ -3,6 +3,7 @@ services:
     build: .
     image: iso-claude
     container_name: iso-claude
+    init: true
     entrypoint: ["/usr/local/bin/entrypoint.sh"]
     command: ["sleep", "infinity"]
 
