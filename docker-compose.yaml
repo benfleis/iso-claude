@@ -30,6 +30,8 @@ services:
       # The OAuth token (CLAUDE_CODE_OAUTH_TOKEN) is deliberately NOT declared here. 
       # A compose-level passthrough becomes container config, and can force rebuilds.
       # Instead rely on per session wrappers using -e CLAUDE_CODE_OAUTH_TOKEN 
+      - TERM=${TERM}
+      - COLORTERM=${COLORTERM}
 
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]
