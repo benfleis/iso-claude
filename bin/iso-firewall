@@ -26,8 +26,11 @@ export LC_ALL=C # byte-order collation so `sort` and `comm` always agree
 
 COMPOSE_DIR="${ISO_CLAUDE_DIR:-/opt/workspace/src/iso-claude}"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yaml"
+# Settings only (not secrets): our `dc up -d` must interpolate the same config
+# as the launcher's, or it would recreate the container under a running session.
+source "$COMPOSE_DIR/bin/iso-common.sh"
+iso_load_settings
 ALLOWLIST="${ISO_ALLOWLIST:-$COMPOSE_DIR/allowlist.conf}"
-SERVICE=claude
 SET=allowed-domains
 TMPSET=allowed-domains-tmp
 REQUIRED_DOMAIN="api.anthropic.com" # losing this breaks Claude — never wipe it on a DNS blip

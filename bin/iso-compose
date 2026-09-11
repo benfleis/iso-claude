@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# iso-compose — `docker compose` for the sandbox, with the launcher settings
+# loaded. Use it for anything you'd otherwise run by hand (build, down, logs):
+# plain `docker compose` never reads ~/.config/iso-claude/.env, so it would build
+# the image for the wrong ISO_UID, or see different mounts and recreate the
+# container under a running session.
+set -euo pipefail
+
+COMPOSE_DIR="/opt/workspace/src/iso-claude" # where your docker-compose.yaml lives
+source "$COMPOSE_DIR/bin/iso-common.sh"
+
+iso_load_settings
+exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" "$@"

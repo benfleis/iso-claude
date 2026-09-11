@@ -10,8 +10,10 @@ iso_ensure_running "iso-shell"
 
 # Forward the OAuth token if we have one, so `claude` also works inside the shell
 # (the token is no longer baked into the container — see docker-compose.yaml).
+# GH_TOKEN rides the same path so `gh` is authenticated inside the sandbox.
 token_arg=()
-[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && token_arg=(-e CLAUDE_CODE_OAUTH_TOKEN)
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && token_arg+=(-e CLAUDE_CODE_OAUTH_TOKEN)
+[[ -n "${GH_TOKEN:-}" ]] && token_arg+=(-e GH_TOKEN)
 
 # Drop the interactive shell to the host UID (PID 1 stayed root for the firewall).
 exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \

@@ -7,26 +7,18 @@ allowlist**.
 
 ## Quick start
 
-Needs Docker (with Compose) and a Claude Code OAuth token. From a clone of this
-repo:
+Needs Docker (with Compose). From a clone of this repo:
 
 ```bash
-docker compose build
-
-# Drop in an OAuth token. Mint it anywhere with `claude setup-token` (NOT inside
-# the sandbox — the firewall would block the login flow), or reuse an existing
-# one. Using a token only needs api.anthropic.com, which is already allowlisted.
-# setup-token OAuth tokens are valid for one year; the file is sourced by the
-# wrappers, so the '#' minted/expires line is just a note-to-self (no expiry
-# warning is shown for this token type — see Token lifetime below).
-mkdir -p ~/.config/iso-claude
-{
-  echo "# minted_at: $(date -Idate)  expires_at: $(date -d '+1 year' -Idate)"
-  echo "export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…"
-} > ~/.config/iso-claude/.env
-
+./bin/iso-compose build     # not plain `docker compose`: see Setup below
 ./bin/iso-claude            # first run builds the allowlist, then launches Claude
 ```
+
+On first launch, run `/login`: it prints a URL — open it in any browser, paste
+the code back. The credential is stored in Claude's state dir and refreshes on
+its own (`platform.claude.com` is allowlisted). It's a full account login, so
+Remote Control and claude.ai session links work. For an inference-only token
+instead, see **Token mode** below.
 
 That's it — the first launch brings the container up, populates the egress
 firewall, and drops you into Claude as your own user. Put `bin/` on your `PATH`
@@ -92,55 +84,70 @@ host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
 
 ### State, dotfiles & persistence
 
-The in-container user is **`iso-claude`** (uid 1000), and `HOME` is its real
-home `/home/iso-claude` — so the image's dotfiles and toolchains (cargo, uv,
-rustup, the zsh prompt) resolve normally. Two things are decoupled from `HOME`:
+The in-container user is **`iso-claude`**, with uid/gid baked in at build time
+from `ISO_UID`/`ISO_GID` (default 1000; must match your host user). `HOME` is
+its real home `/home/iso-claude` — so the image's dotfiles and toolchains
+(cargo, uv, rustup, the zsh prompt) resolve normally. Two things are decoupled from `HOME`:
 
 - **Claude's durable state** (config, auth, project trust, history, sessions)
   is redirected via `CLAUDE_CONFIG_DIR` to a **separate mount**
   (`$CLAUDE_STATE_DIR` → `/home/iso-claude/.claude-state`), so it survives
-  rebuilds and stays out of your project files. `/opt/workspace` holds *only*
-  your code.
+  rebuilds and stays out of your project files.
 - **Your personal shell config** lives in the bind-mounted workspace as
-  `/opt/workspace/.zshenv-local` and `/opt/workspace/.zshrc-local`, sourced by
-  the baked dotfiles if present — persistent and host-editable without
-  rebuilding.
+  `/opt/workspace/config/zsh/env-local` and `/opt/workspace/config/zsh/rc-local`,
+  sourced by the baked dotfiles if present — persistent and host-editable
+  without rebuilding. Git identity is `config/git` (`~/.config/git` links to
+  it); zsh history is `state/zsh_history`.
+
+What belongs host-private, guest-private, or shared (credentials, the checkout
+itself, caches, shell config), and why, is in
+[docs/data-zones.md](docs/data-zones.md).
 
 ## Layout
 
 | File | Role |
 | ------ | ------ |
 | `docker-compose.yaml` | Service definition, capabilities, hardening, bind-mount |
-| `Dockerfile` | `node:22` base + build toolchain + Claude Code + firewall scaffolding |
+| `Dockerfile` | Ubuntu 26.04 base + build toolchain + Claude Code + firewall scaffolding |
 | `entrypoint.sh` | Runs `init-firewall.sh` as root at boot, then idles |
 | `init-firewall.sh` | In-container **scaffolding only** — static rules + empty ipset |
 | `bin/iso-firewall` | **Host-side reconcile** — resolves the allowlist and applies it |
 | `bin/iso-claude` | Launch a Claude session in the sandbox |
 | `bin/iso-shell` | Drop into an interactive shell in the sandbox |
+| `bin/iso-compose` | `docker compose` with the launcher settings loaded (build, down, logs) |
 | `allowlist.conf` | The egress allowlist (host-editable) |
-| `.env-example` | Copy to `.env`; sets `CLAUDE_WORK_DIR` / `CLAUDE_STATE_DIR` |
+| `.env-example` | Copy to `~/.config/iso-claude/.env`; sets `CLAUDE_WORK_DIR`, `ISO_UID`, … |
+| `docs/` | `data-zones.md` (what's host-private / guest-private / shared), `SNI-filtering.md` |
 
 ## Usage
 
 **Setup**
 
 ```bash
-cp .env-example .env            # set CLAUDE_WORK_DIR etc. for your machine
-docker compose build
-
-# Mint a dedicated OAuth token OUTSIDE the sandbox (the firewall blocks the
-# login flow inside it), then stash it where the wrappers look. Using the token
-# only needs api.anthropic.com, which is allowlisted, so the jail works fine.
-claude setup-token              # on the host, or any machine with Claude Code
 mkdir -p ~/.config/iso-claude
+cp .env-example ~/.config/iso-claude/.env   # set CLAUDE_WORK_DIR, ISO_UID etc.
+iso-compose build
+
+# Optional, token mode instead of /login (see below): mint a token and stash it
+# in the launcher's secrets file (0600). GH_TOKEN=… for `gh` goes here too.
+claude setup-token              # on the host, or any machine with Claude Code
+mkdir -p -m 700 ~/.local/state/iso-claude-launcher
 {
   echo "# minted_at: $(date -Idate)  expires_at: $(date -d '+1 year' -Idate)"
-  echo "export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…"
-} > ~/.config/iso-claude/.env
+  echo "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…"
+} > ~/.local/state/iso-claude-launcher/.env
+chmod 600 ~/.local/state/iso-claude-launcher/.env
 ```
 
-**Token lifetime & revocation.** A `setup-token` OAuth token is valid for
-**one year** and is *inference-only* (it can't drive Remote Control). Claude Code
+Run compose through **`iso-compose`**, never plain `docker compose`: only the
+`bin/` scripts load `~/.config/iso-claude/.env`. A plain build bakes in uid 1000
+(the launcher then refuses the image), and a plain `up` can see different mounts
+and recreate the container under your running sessions.
+
+**Token mode.** Setting `CLAUDE_CODE_OAUTH_TOKEN` switches `iso-claude` from
+`/login` to the token, forwarded fresh on every exec. A `setup-token` OAuth
+token is valid for **one year** and is *inference-only* (it can't drive Remote
+Control). Claude Code
 shows **no expiry warning** for this token type — hence the `# minted_at /
 expires_at` note above; set a reminder to rotate. If a token leaks, note that
 **rotating ≠ revoking**: minting a new one leaves the old one valid for its full
@@ -208,15 +215,13 @@ tighten containment at the cost of per-IP flapping for that provider. See
 - **CDN breadth vs. precision.** With the `@cdn` directives on, egress reaches
   anything on those CDNs. That's a deliberate reliability/containment trade — the
   tight-and-reliable fix is below.
-- **Don't run `/login` inside the sandbox.** Auth here is the
-  `CLAUDE_CODE_OAUTH_TOKEN` env token. A `/login` writes a stored credential into
-  Claude's state dir (`$CLAUDE_CONFIG_DIR/.credentials.json`), which Claude *prefers over the env
-  token* — and once it expires it can't refresh (the refresh endpoint isn't on
-  the allowlist), so Claude 401s with "Please run /login" and never falls back
-  to the still-valid token. `iso-claude` guards against this: on each launch it
-  moves any such stored credential aside (to `….credentials.json.shadowed-*.bak`)
-  so the token always wins. If you ever see a 401 login prompt, a stale stored
-  credential is the usual cause.
+- **Auth modes don't mix.** `/login` stores a credential in Claude's state dir
+  (`$CLAUDE_CONFIG_DIR/.credentials.json`), and Claude *prefers it over*
+  `CLAUDE_CODE_OAUTH_TOKEN`. So in token mode, `iso-claude` moves any stored
+  credential aside on each launch (to `….credentials.json.shadowed-*.bak`) so the
+  token wins; to go back to `/login`, unset the token. A 401 "Please run /login"
+  with `/login` in use usually means `platform.claude.com` (refresh) dropped off
+  the allowlist — run `iso-firewall`.
 
 ## Future work
 

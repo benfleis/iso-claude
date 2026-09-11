@@ -1,12 +1,26 @@
-FROM node:22
+# Ubuntu 26.04, not node:22 (Debian 12 bookworm): every apt-sourced toolchain in
+# bookworm is frozen at 2022-2023, and this sandbox is a build box first. Losing
+# the node base means Node is installed deliberately below — Claude Code is an
+# npm global and must stay one (see tasks/claude-state-port.md).
+FROM ubuntu:26.04
 
 ARG TZ
 ENV TZ="$TZ"
 
 ARG CLAUDE_CODE_VERSION=latest
 
-# Install basic development tools and iptables/ipset
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ca-certificates/curl/wget are base-image assumptions inherited from node:22
+# that Ubuntu does not make; everything below fetching over https needs them.
+# Same for the build kit from make onward: node:22 is FROM buildpack-deps, which
+# silently provided make, autotools, pkg-config, patch and the common -dev
+# headers (DuckDB's Makefile wrapper, vcpkg's autotools ports).
 RUN apt-get update && apt-get install -y --no-install-recommends \
+  ca-certificates \
+  curl \
+  wget \
+  gnupg2 \
   less \
   git \
   procps \
@@ -17,13 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   unzip \
   zip \
   zstd \
-  gnupg2 \
-  gh \
+  xz-utils \
   iptables \
   ipset \
   iproute2 \
   dnsutils \
-  aggregate \
   jq \
   nano \
   vim \
@@ -34,19 +46,100 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   g++ \
   clang \
   lldb \
-  mold \
-  sccache \
   clangd \
-  jq \
-  curl \
+  mold \
+  poppler-utils \
   openjdk-17-jre-headless \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
+  make \
+  autoconf \
+  autoconf-archive \
+  automake \
+  libtool \
+  pkg-config \
+  patch \
+  file \
+  bzip2 \
+  dpkg-dev \
+  openssh-client \
+  libssl-dev \
+  zlib1g-dev \
+  libcurl4-openssl-dev \
+  liblzma-dev \
+  libbz2-dev \
+  libffi-dev \
+  libreadline-dev \
+  libsqlite3-dev \
+  && rm -rf /var/lib/apt/lists/*
 
-# The node:22 base ships a uid/gid 1000 "node" user; rename it to iso-claude
-# (uid/gid stay 1000, matching the host user that sessions exec as). Everything
-# below refers to /home/iso-claude accordingly.
-RUN usermod -l iso-claude -d /home/iso-claude -m node \
-  && groupmod -n iso-claude node
+# Debian and Ubuntu both ship fd as `fdfind` (name clash with fdclone). An alias
+# in .zshrc is not enough: the non-interactive shells tooling spawns never load it.
+RUN ln -s /usr/bin/fdfind /usr/local/bin/fd
+
+# gh from GitHub's own apt repo — the distro package trails by a year or more.
+RUN mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+     -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+     > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node via NodeSource rather than a pinned tarball: this reproduces exactly what
+# the node:22 tag did — pin the major, float the patch.
+ARG NODE_MAJOR=22
+# The key is ASCII-armored: apt only accepts that under a .asc name (a .gpg name
+# must be a binary keyring, else "unsupported filetype" and NO_PUBKEY).
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+     -o /etc/apt/keyrings/nodesource.asc \
+  && chmod a+r /etc/apt/keyrings/nodesource.asc \
+  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+     > /etc/apt/sources.list.d/nodesource.list \
+  && printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' \
+     > /etc/apt/preferences.d/nodesource \
+  && apt-get update && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/* \
+  && node --version | grep -q "^v${NODE_MAJOR}\." \
+  && npm --version
+# The pin above: without it apt takes whichever nodejs is newer, and Ubuntu's
+# build is a different major AND ships without npm. The check fails the build
+# rather than ship either.
+
+# sccache from its release archive, not apt: packaged version too old.
+ARG SCCACHE_VERSION=0.17.0
+RUN ARCH=$(dpkg --print-architecture) && \
+  case "$ARCH" in \
+    amd64) SCCACHE_TARGET=x86_64-unknown-linux-musl ;; \
+    arm64) SCCACHE_TARGET=aarch64-unknown-linux-musl ;; \
+    *) echo "no sccache release target mapped for dpkg arch '$ARCH'" >&2; exit 1 ;; \
+  esac && \
+  SCCACHE_DIST="sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}" && \
+  SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_DIST}.tar.gz" && \
+  curl --proto '=https' --tlsv1.2 -sSfL -O "$SCCACHE_URL" && \
+  curl --proto '=https' --tlsv1.2 -sSfL -O "$SCCACHE_URL.sha256" && \
+  echo "$(cat "${SCCACHE_DIST}.tar.gz.sha256")  ${SCCACHE_DIST}.tar.gz" | sha256sum -c && \
+  tar -xzf "${SCCACHE_DIST}.tar.gz" && \
+  install -m 0755 "${SCCACHE_DIST}/sccache" /usr/bin/sccache && \
+  rm -rf "${SCCACHE_DIST}" "${SCCACHE_DIST}.tar.gz" "${SCCACHE_DIST}.tar.gz.sha256" && \
+  sccache --version
+
+# iso-claude's uid/gid must match the HOST user: sessions exec as
+# `--user $(id -u):$(id -g)` (bin/), and /opt/workspace is bind-mounted with the
+# host's ownership — a mismatch leaves $HOME, ~/.cargo and npm-global unwritable.
+# Set per host via ISO_UID/ISO_GID in the launcher .env (docker-compose.yaml).
+# The label lets the launcher refuse an image built for the wrong user.
+# Ubuntu ships a uid-1000 `ubuntu` user (node:22 shipped `node`): rename it, then
+# renumber. usermod fails loudly if the target uid is already taken.
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN if id -u ubuntu >/dev/null 2>&1; then \
+      usermod -l iso-claude -d /home/iso-claude -m ubuntu && groupmod -n iso-claude ubuntu; \
+    else \
+      useradd -U -m -d /home/iso-claude -s /bin/bash iso-claude; \
+    fi \
+  && groupmod -g "$USER_GID" iso-claude \
+  && usermod -u "$USER_UID" -g "$USER_GID" iso-claude
+LABEL iso-claude.uid-gid="${USER_UID}:${USER_GID}"
 
 # Ensure the iso-claude user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -73,7 +166,7 @@ WORKDIR /opt/workspace
 ARG GIT_DELTA_VERSION=0.18.2
 RUN ARCH=$(dpkg --print-architecture) && \
   wget "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
-  sudo dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
+  dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
   rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
 
 # Set up non-root user
@@ -99,11 +192,11 @@ ENV VISUAL=vim
 
 # Default powerline10k theme
 ARG ZSH_IN_DOCKER_VERSION=1.2.0
+# fzf key bindings/completion come from the omz fzf plugin (via `fzf --zsh`);
+# Ubuntu's fzf no longer ships the Debian examples/*.zsh files to source.
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)" -- \
   -p git \
   -p fzf \
-  -a "source /usr/share/doc/fzf/examples/key-bindings.zsh" \
-  -a "source /usr/share/doc/fzf/examples/completion.zsh" \
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
@@ -140,11 +233,13 @@ ENV PATH=$PATH:/home/iso-claude/.cargo/bin:/home/iso-claude/.local/bin
 # Source personal/project shell config from the bind-mounted workspace, so it
 # persists and stays host-editable instead of being baked in; and keep zsh
 # history in the workspace too (HOME is /home/iso-claude, which is not mounted).
-RUN printf '\n[ -f /opt/workspace/.zshenv-local ] && source /opt/workspace/.zshenv-local\n' >> /home/iso-claude/.zshenv \
-  && printf '\n[ -f /opt/workspace/.zshrc-local ] && source /opt/workspace/.zshrc-local\nexport HISTFILE=/opt/workspace/.zsh_history\n' >> /home/iso-claude/.zshrc
+# The workspace root is read-only by design (nothing lands there unplaced):
+# config lives in config/, history (state) in state/.
+RUN printf '\n[ -f /opt/workspace/config/zsh/env-local ] && source /opt/workspace/config/zsh/env-local\n' >> /home/iso-claude/.zshenv \
+  && printf '\n[ -f /opt/workspace/config/zsh/rc-local ] && source /opt/workspace/config/zsh/rc-local\nexport HISTFILE=/opt/workspace/state/zsh_history\n' >> /home/iso-claude/.zshrc
 
 # Git config matters, link to the workspace
-RUN mkdir -p /home/iso-claude/.config && env -C /home/iso-claude/.config ln -sf /opt/workspace/.config/git
+RUN mkdir -p /home/iso-claude/.config && env -C /home/iso-claude/.config ln -sf /opt/workspace/config/git
 
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}

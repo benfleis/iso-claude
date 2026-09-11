@@ -1,6 +1,14 @@
 services:
   claude:
-    build: .
+    build:
+      context: .
+      # Image user must match the host user sessions exec as; set per host in
+      # ~/.config/iso-claude/.env (e.g. ISO_UID=3000 on faber). Only the bin/
+      # scripts read that file, so build with `iso-compose build`; plain
+      # `docker compose build` falls back to 1000 (the launcher refuses the image).
+      args:
+        USER_UID: ${ISO_UID:-1000}
+        USER_GID: ${ISO_GID:-1000}
     image: iso-claude
     container_name: iso-claude
     init: true
@@ -50,7 +58,9 @@ services:
     # memory-hungry at link time (mold was adopted specifically to make that
     # fit in RAM) — if a real build ever gets OOM-killed (exit 137) under this
     # cap, raise it further or drop it rather than assuming the build is at fault.
+    # Sized for a 32G host. The buffer also has to cover the ZFS ARC, which
+    # grows to fill what is left — lower this, not the ARC target, if they fight.
     pids_limit: 4096
-    mem_limit: 13.5g
+    mem_limit: 28g
 
     restart: unless-stopped
