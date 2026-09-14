@@ -43,7 +43,7 @@ bypass-permissions mode acceptable — *given* the locked egress.
 The container is a **disposable execution jail invoked like a command**, not a
 place you live in. Persistence (tmux, shells) stays on the host; each
 `iso-claude` invocation is an independent Claude session sharing one container,
-a `/opt/workspace` bind-mount, a separate state mount, and one firewall.
+a `/opt/workspace` bind-mount, the read-only `/opt/tooling` toolchains, and one firewall.
 
 ```
 host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
@@ -86,13 +86,16 @@ host ── bin/iso-claude ──▶ docker compose exec --user <you> claude …
 
 The in-container user is **`iso-claude`**, with uid/gid baked in at build time
 from `ISO_UID`/`ISO_GID` (default 1000; must match your host user). `HOME` is
-its real home `/home/iso-claude` — so the image's dotfiles and toolchains
-(cargo, uv, rustup, the zsh prompt) resolve normally. Two things are decoupled from `HOME`:
+its real home `/home/iso-claude` — so the image's dotfiles (the zsh prompt,
+Claude Code) resolve normally. What must persist is decoupled from `HOME`:
 
 - **Claude's durable state** (config, auth, project trust, history, sessions)
-  is redirected via `CLAUDE_CONFIG_DIR` to a **separate mount**
-  (`$CLAUDE_STATE_DIR` → `/home/iso-claude/.claude-state`), so it survives
-  rebuilds and stays out of your project files.
+  lives inside the workspace (`$CLAUDE_STATE_DIR`, default
+  `$CLAUDE_WORK_DIR/state/iso-claude`); `CLAUDE_CONFIG_DIR` points at it, so it
+  survives rebuilds.
+- **Toolchains apt can't supply at the right version** (rust, uv, go, sccache)
+  are one shared, root-owned copy in `/opt/tooling`, mounted read-only, with one
+  env file both sides source; see [tooling/README.md](tooling/README.md).
 - **Your personal shell config** lives in the bind-mounted workspace as
   `/opt/workspace/config/zsh/env-local` and `/opt/workspace/config/zsh/rc-local`,
   sourced by the baked dotfiles if present — persistent and host-editable
@@ -117,7 +120,8 @@ itself, caches, shell config), and why, is in
 | `bin/iso-compose` | `docker compose` with the launcher settings loaded (build, down, logs) |
 | `allowlist.conf` | The egress allowlist (host-editable) |
 | `.env-example` | Copy to `~/.config/iso-claude/.env`; sets `CLAUDE_WORK_DIR`, `ISO_UID`, … |
-| `docs/` | `data-zones.md` (what's host-private / guest-private / shared), `SNI-filtering.md` |
+| `docs/` | `data-zones.md` (what's host-private / tooling / guest-private / shared), `SNI-filtering.md` |
+| `tooling/` | The shared toolchains: `install.sh`, `mise.toml` + `mise.lock`, `env.sh` (installed to `/opt/tooling`) |
 
 ## Usage
 

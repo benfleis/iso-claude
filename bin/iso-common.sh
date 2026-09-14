@@ -12,6 +12,10 @@ SERVICE=claude
 # set -a: plain KEY=val lines must reach `docker compose`, which only sees
 # exported vars.
 #
+# Also places Claude's state: inside the workspace (CLAUDE_STATE_DIR, default
+# $CLAUDE_WORK_DIR/state/iso-claude), so the container reaches it through the
+# workspace mount; ISO_CLAUDE_CONFIG_DIR is that path as the container sees it.
+#
 # Usage: iso_load_settings
 iso_load_settings() {
     local f="$HOME/.config/iso-claude/.env"
@@ -20,6 +24,17 @@ iso_load_settings() {
         source "$f"
         set +a
     fi
+    : "${CLAUDE_WORK_DIR:=/opt/workspace}"
+    : "${CLAUDE_STATE_DIR:=$CLAUDE_WORK_DIR/state/iso-claude}"
+    case "$CLAUDE_STATE_DIR" in
+        "$CLAUDE_WORK_DIR"/?*) ;;
+        *)
+            echo "iso-claude: CLAUDE_STATE_DIR ($CLAUDE_STATE_DIR) must be inside CLAUDE_WORK_DIR ($CLAUDE_WORK_DIR)" >&2
+            exit 1
+            ;;
+    esac
+    export CLAUDE_WORK_DIR CLAUDE_STATE_DIR
+    export ISO_CLAUDE_CONFIG_DIR="/opt/workspace/${CLAUDE_STATE_DIR#"$CLAUDE_WORK_DIR"/}"
 }
 
 # Refuse to run as root: `exec --user` downstream is derived straight from our
@@ -32,9 +47,8 @@ iso_load_settings() {
 #   ~/.local/state/iso-claude-launcher/.env  secrets (CLAUDE_CODE_OAUTH_TOKEN,
 #                                            GH_TOKEN); keep it 0600
 # Secrets are exported for the wrappers' `-e VAR` passthrough only; nothing in
-# docker-compose.yaml reads them. The secrets file is NOT under
-# ~/.local/state/iso-claude: that is the default CLAUDE_STATE_DIR, which is
-# bind-mounted into the container.
+# docker-compose.yaml reads them. Keep the secrets file outside CLAUDE_WORK_DIR:
+# the container mounts all of that.
 #
 # Usage: iso_prepare_env <name-for-messages>
 iso_prepare_env() {
@@ -60,22 +74,31 @@ iso_ensure_running() {
 
     # Create the work dir AND Claude's state dir on the HOST first, so Docker
     # doesn't auto-create them as root (root-owned mounts break access and
-    # trap Claude in a login loop). Both are bind-mounted by docker-compose.yaml.
-    mkdir -p "${CLAUDE_WORK_DIR:-/opt/workspace}"
+    # trap Claude in a login loop).
+    mkdir -p "$CLAUDE_WORK_DIR"
     # The state dir holds the /login credential (.credentials.json) and every
     # transcript: owner-only, re-asserted each launch in case it was created or
     # copied in loosely.
-    local state_dir="${CLAUDE_STATE_DIR:-$HOME/.local/state/iso-claude}"
-    mkdir -p "$state_dir"
-    chmod 700 "$state_dir"
+    mkdir -p "$CLAUDE_STATE_DIR"
+    chmod 700 "$CLAUDE_STATE_DIR"
 
-    # Make sure the sandbox is up (no-op if already running).
-    docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d >/dev/null
+    # The shared toolchains are bind-mounted read-only (tooling/README.md);
+    # without them the container has no rust, uv, go or sccache. Checked before
+    # `up`, so a missing install can't lead to a recreate.
+    if [ ! -d /opt/tooling/bin ]; then
+        echo "$name: /opt/tooling is not installed; run: sudo $COMPOSE_DIR/tooling/install.sh" >&2
+        exit 1
+    fi
+
+    # Make sure the sandbox is up. --no-recreate: a launch never replaces a running
+    # container, even after a rebuild or a compose edit (either kills every session);
+    # switching to a new image/config is a deliberate `iso-compose up -d`.
+    docker compose -f "$COMPOSE_DIR/docker-compose.yaml" up -d --no-recreate >/dev/null
 
     # The image's iso-claude uid:gid is baked in at build time (ISO_UID/ISO_GID,
-    # recorded in a label) and must equal ours, or $HOME, ~/.cargo and
-    # npm-global are unwritable. A plain `docker compose build` skips
-    # iso_load_settings, so check the label rather than trust the build.
+    # recorded in a label) and must equal ours, or $HOME and npm-global are
+    # unwritable. A plain `docker compose build` skips iso_load_settings, so
+    # check the label rather than trust the build.
     local want have
     want="$(id -u):$(id -g)"
     have=$(docker image inspect -f '{{index .Config.Labels "iso-claude.uid-gid"}}' iso-claude 2>/dev/null || true)

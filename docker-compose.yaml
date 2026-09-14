@@ -23,21 +23,30 @@ services:
       # NOTE: mapping /opt/workspace -> /opt/workspace means tools like git
       # (which converts relative paths to absoluate, despite my efforts) work
       # both in, and outside of the docker; a useful property :)
+      # Claude's state lives inside it too (CLAUDE_CONFIG_DIR below).
       - "${CLAUDE_WORK_DIR:-/opt/workspace}:/opt/workspace"
-      # Claude's durable state (config, auth, project trust, history, sessions)
-      # lives on its own mount, NOT in /opt/workspace — keeps the workspace clean
-      # and survives rebuilds. See CLAUDE_CONFIG_DIR below.
-      - "${CLAUDE_STATE_DIR:-${HOME}/.local/state/iso-claude}:/home/iso-claude/.claude-state"
+      # Shared toolchains (rust, uv, go, sccache): one root-owned copy for host and
+      # guest at the identical path, read-only here so a session can't alter
+      # binaries the host runs (tooling/README.md). Long form on purpose: on this
+      # Docker the short "/opt/tooling:/opt/tooling:ro" mounts nothing when source
+      # and target paths match.
+      - type: bind
+        source: /opt/tooling
+        target: /opt/tooling
+        read_only: true
     working_dir: /opt/workspace
 
     environment:
-      # HOME is the iso-claude user's real home (image-baked dotfiles + toolchains
-      # resolve normally); Claude's state is redirected out to the mount above.
+      # HOME is the iso-claude user's real home (image-baked dotfiles resolve
+      # normally); Claude's state is redirected into the workspace mount.
       - HOME=/home/iso-claude
-      - CLAUDE_CONFIG_DIR=/home/iso-claude/.claude-state
-      # The OAuth token (CLAUDE_CODE_OAUTH_TOKEN) is deliberately NOT declared here. 
+      # The container path of $CLAUDE_STATE_DIR, derived by bin/ (iso_load_settings).
+      # `:?` makes plain `docker compose`, which skips the launcher settings, fail
+      # rather than start the container with the wrong config.
+      - CLAUDE_CONFIG_DIR=${ISO_CLAUDE_CONFIG_DIR:?run compose via bin/iso-compose}
+      # The OAuth token (CLAUDE_CODE_OAUTH_TOKEN) is deliberately NOT declared here.
       # A compose-level passthrough becomes container config, and can force rebuilds.
-      # Instead rely on per session wrappers using -e CLAUDE_CODE_OAUTH_TOKEN 
+      # Instead rely on per session wrappers using -e CLAUDE_CODE_OAUTH_TOKEN
       - TERM=${TERM}
       - COLORTERM=${COLORTERM}
 

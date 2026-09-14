@@ -105,27 +105,12 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 # build is a different major AND ships without npm. The check fails the build
 # rather than ship either.
 
-# sccache from its release archive, not apt: packaged version too old.
-ARG SCCACHE_VERSION=0.17.0
-RUN ARCH=$(dpkg --print-architecture) && \
-  case "$ARCH" in \
-    amd64) SCCACHE_TARGET=x86_64-unknown-linux-musl ;; \
-    arm64) SCCACHE_TARGET=aarch64-unknown-linux-musl ;; \
-    *) echo "no sccache release target mapped for dpkg arch '$ARCH'" >&2; exit 1 ;; \
-  esac && \
-  SCCACHE_DIST="sccache-v${SCCACHE_VERSION}-${SCCACHE_TARGET}" && \
-  SCCACHE_URL="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_DIST}.tar.gz" && \
-  curl --proto '=https' --tlsv1.2 -sSfL -O "$SCCACHE_URL" && \
-  curl --proto '=https' --tlsv1.2 -sSfL -O "$SCCACHE_URL.sha256" && \
-  echo "$(cat "${SCCACHE_DIST}.tar.gz.sha256")  ${SCCACHE_DIST}.tar.gz" | sha256sum -c && \
-  tar -xzf "${SCCACHE_DIST}.tar.gz" && \
-  install -m 0755 "${SCCACHE_DIST}/sccache" /usr/bin/sccache && \
-  rm -rf "${SCCACHE_DIST}" "${SCCACHE_DIST}.tar.gz" "${SCCACHE_DIST}.tar.gz.sha256" && \
-  sccache --version
+# Rust, uv, go and sccache are NOT installed here: they come from /opt/tooling,
+# one root-owned copy shared with the host and mounted read-only (tooling/README.md).
 
 # iso-claude's uid/gid must match the HOST user: sessions exec as
 # `--user $(id -u):$(id -g)` (bin/), and /opt/workspace is bind-mounted with the
-# host's ownership — a mismatch leaves $HOME, ~/.cargo and npm-global unwritable.
+# host's ownership — a mismatch leaves $HOME and npm-global unwritable.
 # Set per host via ISO_UID/ISO_GID in the launcher .env (docker-compose.yaml).
 # The label lets the launcher refuse an image built for the wrong user.
 # Ubuntu ships a uid-1000 `ubuntu` user (node:22 shipped `node`): rename it, then
@@ -156,9 +141,8 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 # Set `DEVCONTAINER` environment variable to help with orientation
 ENV DEVCONTAINER=true
 
-# Create the workspace mountpoint and the Claude state-dir mountpoint
-# (CLAUDE_CONFIG_DIR — see docker-compose.yaml), then set ownership.
-RUN mkdir -p /opt/workspace /home/iso-claude/.claude-state && \
+# Mountpoints for the workspace and the shared toolchains (docker-compose.yaml).
+RUN mkdir -p /opt/workspace /opt/tooling && \
   chown -R iso-claude:iso-claude /opt/workspace /home/iso-claude
 
 WORKDIR /opt/workspace
@@ -200,42 +184,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-# astral uv On macOS and Linux.
-# Pinned to a specific version URL (astral's documented pinning mechanism —
-# same pattern as GIT_DELTA_VERSION/ZSH_IN_DOCKER_VERSION above) instead of the
-# mutable /uv/install.sh "latest" endpoint, so the fetched script content is
-# tied to a released version rather than whatever astral.sh serves today.
-ARG UV_VERSION=0.11.28
-RUN curl --proto '=https' --tlsv1.2 -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
-
-# rustup — the sh.rustup.rs bootstrapper isn't independently version-pinnable,
-# so fetch the platform rustup-init binary directly from the versioned archive
-# and verify it against its published sha256 instead of piping the bootstrap
-# script.
-ARG RUSTUP_VERSION=1.29.0
-RUN ARCH=$(dpkg --print-architecture) && \
-  case "$ARCH" in \
-    amd64) RUST_TARGET=x86_64-unknown-linux-gnu ;; \
-    arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;; \
-    *) echo "no pinned rustup-init target mapped for dpkg arch '$ARCH'" >&2; exit 1 ;; \
-  esac && \
-  curl --proto '=https' --tlsv1.2 -sSfO "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init" && \
-  curl --proto '=https' --tlsv1.2 -sSfO "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TARGET}/rustup-init.sha256" && \
-  sha256sum -c rustup-init.sha256 && \
-  chmod +x rustup-init && \
-  ./rustup-init -y --verbose --default-toolchain stable && \
-  rm rustup-init rustup-init.sha256
-
-# Put the user-local toolchains (cargo, uv) on PATH for NON-login sessions too —
-# Claude's own shell runs `claude` directly and never sources ~/.zshenv.
-ENV PATH=$PATH:/home/iso-claude/.cargo/bin:/home/iso-claude/.local/bin
-
-# Source personal/project shell config from the bind-mounted workspace, so it
-# persists and stays host-editable instead of being baked in; and keep zsh
-# history in the workspace too (HOME is /home/iso-claude, which is not mounted).
-# The workspace root is read-only by design (nothing lands there unplaced):
-# config lives in config/, history (state) in state/.
-RUN printf '\n[ -f /opt/workspace/config/zsh/env-local ] && source /opt/workspace/config/zsh/env-local\n' >> /home/iso-claude/.zshenv \
+# Shell environment, all from the bind mounts so it stays in step with the host:
+# first the shared toolchains' env (/opt/tooling/env.sh, the same file the host
+# sources), then personal config, which may override it. zsh history lives in the
+# workspace too (HOME is not mounted). The workspace root is read-only by design
+# (nothing lands there unplaced): config lives in config/, history (state) in state/.
+RUN printf '\n[ -f /opt/tooling/env.sh ] && . /opt/tooling/env.sh\n[ -f /opt/workspace/config/zsh/env-local ] && source /opt/workspace/config/zsh/env-local\n' >> /home/iso-claude/.zshenv \
   && printf '\n[ -f /opt/workspace/config/zsh/rc-local ] && source /opt/workspace/config/zsh/rc-local\nexport HISTFILE=/opt/workspace/state/zsh_history\n' >> /home/iso-claude/.zshrc
 
 # Git config matters, link to the workspace
@@ -243,6 +197,11 @@ RUN mkdir -p /home/iso-claude/.config && env -C /home/iso-claude/.config ln -sf 
 
 # Install Claude
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# Runtime caches go to the shared cache (docs/data-zones.md). Set after the
+# build-time npm install, whose cache stays in the image layer.
+ENV XDG_CACHE_HOME=/opt/workspace/cache \
+    npm_config_cache=/opt/workspace/cache/npm
 
 # Copy and set up firewall script
 USER root
@@ -252,5 +211,14 @@ RUN chmod +x /usr/local/bin/init-firewall.sh
 
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Lock the $HOME defaults the env above replaces: empty, root-owned, read-only, so
+# a tool that ignores the env fails loudly instead of writing to the container
+# layer a recreate throws away. ~/.claude-state stays reachable as a link: Claude's
+# own records store absolute paths under it.
+RUN cd /home/iso-claude \
+  && rm -rf .claude .claude-state .cache .npm .cargo .rustup \
+  && ln -s /opt/workspace/state/iso-claude .claude-state \
+  && mkdir -m 0555 .claude .cache .npm .cargo .rustup
 
 USER iso-claude
