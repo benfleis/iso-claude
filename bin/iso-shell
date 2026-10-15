@@ -17,4 +17,4 @@ token_arg=()
 
 # Drop the interactive shell to the host UID (PID 1 stayed root for the firewall).
 exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
-    exec --user "$(id -u):$(id -g)" "${token_arg[@]}" "$SERVICE" /usr/bin/env zsh "$@"
+  exec --user "$(id -u):$(id -g)" "${token_arg[@]}" "$SERVICE" /usr/bin/env zsh "$@"

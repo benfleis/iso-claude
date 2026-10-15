@@ -25,7 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   git \
   procps \
   sudo \
-  fzf \
   zsh \
   man-db \
   unzip \
@@ -36,18 +35,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ipset \
   iproute2 \
   dnsutils \
-  jq \
   nano \
   vim \
-  fd-find \
-  ripgrep \
   cmake \
   ninja-build \
   g++ \
-  clang \
   lldb \
   clangd \
-  mold \
   poppler-utils \
   openjdk-17-jre-headless \
   make \
@@ -71,26 +65,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libsqlite3-dev \
   && rm -rf /var/lib/apt/lists/*
 
-# Debian and Ubuntu both ship fd as `fdfind` (name clash with fdclone). An alias
-# in .zshrc is not enough: the non-interactive shells tooling spawns never load it.
-RUN ln -s /usr/bin/fdfind /usr/local/bin/fd
-
-# gh from GitHub's own apt repo — the distro package trails by a year or more.
-RUN mkdir -p /etc/apt/keyrings \
-  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-     -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-  && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-     > /etc/apt/sources.list.d/github-cli.list \
-  && apt-get update && apt-get install -y --no-install-recommends gh \
-  && rm -rf /var/lib/apt/lists/*
-
 # Node via NodeSource rather than a pinned tarball: this reproduces exactly what
 # the node:22 tag did — pin the major, float the patch.
 ARG NODE_MAJOR=22
 # The key is ASCII-armored: apt only accepts that under a .asc name (a .gpg name
 # must be a binary keyring, else "unsupported filetype" and NO_PUBKEY).
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+RUN mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
      -o /etc/apt/keyrings/nodesource.asc \
   && chmod a+r /etc/apt/keyrings/nodesource.asc \
   && echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
@@ -158,7 +139,10 @@ USER iso-claude
 
 # Install global packages
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=$PATH:/usr/local/share/npm-global/bin
+
+# The shared toolchains also go on PATH here, not only via /opt/tooling/env.sh
+# so that non-rc-sourcing code gets the same.
+ENV PATH=/opt/tooling/bin:$PATH:/usr/local/share/npm-global/bin
 
 # Set the default shell to zsh rather than sh
 ENV SHELL=/bin/zsh
@@ -177,7 +161,7 @@ ENV VISUAL=vim
 # Default powerline10k theme
 ARG ZSH_IN_DOCKER_VERSION=1.2.0
 # fzf key bindings/completion come from the omz fzf plugin (via `fzf --zsh`);
-# Ubuntu's fzf no longer ships the Debian examples/*.zsh files to source.
+# fzf itself comes from /opt/tooling (on PATH at runtime, not at build time).
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)" -- \
   -p git \
   -p fzf \

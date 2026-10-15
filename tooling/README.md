@@ -9,8 +9,12 @@ This directory in the iso-claude repo is the source; `install.sh` puts it in `/o
 ## The approach
 
 - **What lives here:** toolchains that don't come from Ubuntu's archive, or come too old: rust
-  (rustup), uv, go, sccache. Distro tools (gcc, clang, cmake, ninja, mold, make, the `-dev`
-  headers) stay apt packages on both sides, installed from the same archive.
+  (rustup), uv, go, sccache, plus the C/C++ compiler and linker: clang/clang++ (conda-forge) and
+  mold. The host is Amazon Linux 2023 and the container Ubuntu, so their distro compilers differ;
+  conda's clang brings its own sysroot (glibc 2.34, matching the host) and libstdc++, so both
+  sides compile against identical headers and container-built binaries run on the host. C++
+  binaries get an RPATH into the clangxx install dir: rebuild after bumping it. Remaining distro
+  tools (gcc, cmake, ninja, make, the `-dev` headers) stay system packages on each side.
 - **Owned by root, installed and updated on the host with `sudo`.** Not writable by the host user,
   so no session, on the host or in the container, can alter binaries the host executes.
 - **Read-only in the container**, bind-mounted at the identical path. Use compose's long form
@@ -76,10 +80,12 @@ back to its own default (`~/.local/share/uv/python`), venvs built there dangle o
 
 | Tool | Version |
 | --- | --- |
-| rust | 1.98.1 |
+| rust | 1.99.0 |
 | uv | 0.12.13 |
 | sccache | 0.17.0 |
 | go | 1.27.1 |
+| clang / clang++ | 23.1.3 (conda-forge) |
+| mold | 3.0.0 |
 
 ## Install and update
 

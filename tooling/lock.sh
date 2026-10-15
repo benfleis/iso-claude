@@ -14,7 +14,7 @@ fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-export MISE_DATA_DIR=$tmp/data MISE_STATE_DIR=$tmp/state MISE_CACHE_DIR=$tmp/cache \
+export MISE_DATA_DIR=$tmp/data MISE_STATE_DIR=$tmp/state MISE_CACHE_DIR=${TOOLING_MISE_CACHE:-/opt/mise/cache} \
     MISE_CONFIG_DIR=$tmp/config MISE_GLOBAL_CONFIG_FILE=$tmp/config/none.toml \
     MISE_TRUSTED_CONFIG_PATHS=$here MISE_YES=1
 cd "$here" && "$mise" lock "$@"

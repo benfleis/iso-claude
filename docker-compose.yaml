@@ -34,6 +34,14 @@ services:
         source: /opt/tooling
         target: /opt/tooling
         read_only: true
+      # Config the host loads (dotfiles, agent rules); read-only so a session
+      # can't plant hooks or instructions that run outside the sandbox. Must be a
+      # direct child of the workspace mount: a nested mount point is EBUSY to
+      # rename, but a deeper one can be escaped by renaming its writable parent.
+      - type: bind
+        source: ${CLAUDE_WORK_DIR:-/opt/workspace}/config
+        target: /opt/workspace/config
+        read_only: true
     working_dir: /opt/workspace
 
     environment:
@@ -48,7 +56,10 @@ services:
       # A compose-level passthrough becomes container config, and can force rebuilds.
       # Instead rely on per session wrappers using -e CLAUDE_CODE_OAUTH_TOKEN
       - TERM=${TERM}
-      - COLORTERM=${COLORTERM}
+      - COLORTERM=${COLORTERM:-}
+      # Upstream resolvers Docker's embedded DNS forwards to; init-firewall.sh
+      # allows port 53 to them (derived by bin/, see iso_load_settings).
+      - ISO_DNS_UPSTREAM=${ISO_DNS_UPSTREAM:-}
 
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]

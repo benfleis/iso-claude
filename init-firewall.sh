@@ -43,7 +43,10 @@ fi
 # channel to any nameserver. Outbound SSH is intentionally NOT opened: git over
 # SSH to an allowlisted host (e.g. github) is already covered by the
 # allowed-domains match below, so a blanket tcp/22 would only add an exfil path.
-for ns in $(awk '/^nameserver/{print $2}' /etc/resolv.conf); do
+# Plus ISO_DNS_UPSTREAM: the servers 127.0.0.11 forwards to, which Docker
+# queries from THIS netns. Not a new channel — 127.0.0.11 relays to them anyway.
+for ns in $(awk '/^nameserver/{print $2}' /etc/resolv.conf) ${ISO_DNS_UPSTREAM//[ ,]/$'\n'}; do
+  [[ $ns == *:* ]] && continue # IPv6: iptables (v4) would reject it
   iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
   iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
   iptables -A INPUT -p udp -s "$ns" --sport 53 -j ACCEPT

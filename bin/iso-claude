@@ -23,18 +23,30 @@ iso_ensure_running "iso-claude"
 #  "nothing to do" and any exec failure both exit non-zero → stay silent.)
 env_args=()
 if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-    env_args+=(-e CLAUDE_CODE_OAUTH_TOKEN)
-    if docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
-        exec -T --user "$(id -u):$(id -g)" "$SERVICE" bash -c '
+  env_args+=(-e CLAUDE_CODE_OAUTH_TOKEN)
+  if docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+    exec -T --user "$(id -u):$(id -g)" "$SERVICE" bash -c '
             cred=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json
             [ -f "$cred" ] || exit 1
             mv "$cred" "$cred.shadowed-$(date +%s).bak"
         ' 2>/dev/null; then
-        echo "iso-claude: moved a stored /login credential aside; using CLAUDE_CODE_OAUTH_TOKEN (unset it to use /login instead)" >&2
-    fi
+    echo "iso-claude: moved a stored /login credential aside; using CLAUDE_CODE_OAUTH_TOKEN (unset it to use /login instead)" >&2
+  fi
 fi
 # GH_TOKEN rides along when set, so `gh` is authenticated inside the sandbox.
 [[ -n "${GH_TOKEN:-}" ]] && env_args+=(-e GH_TOKEN)
+
+# Settings layered over the shared settings.json: the iso overlay (Bedrock/AWS env)
+# from the read-only config mount, then this host's local file, which the sandbox
+# cannot reach. Only one --settings counts, so merge them here and pass JSON.
+# (jq `*` merges objects key by key; arrays such as hooks are replaced whole.)
+iso_overlay=/opt/workspace/config/dotfiles/claude/iso-claude/settings.json
+iso_local="${XDG_CONFIG_HOME:-$HOME/.config}/iso-claude/settings.json"
+if [[ -r "$iso_local" ]]; then
+  ISO_SETTINGS_OVERLAY=$(jq -cs '.[0] * .[1]' "$iso_overlay" "$iso_local")
+else
+  ISO_SETTINGS_OVERLAY=$(jq -c . "$iso_overlay")
+fi
 
 # Hand off to claude inside it, passing along any args you typed.
 # --user drops the session to the host UID (PID 1 stayed root for the firewall).
@@ -43,7 +55,12 @@ fi
 # --dangerously-skip-permissions. Comment the line below and uncomment this one.
 # Only defensible because egress is allowlist-locked and the session can't escape
 # the container — never point it at adversarial content (see README caveats).
-# exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
-#     exec --user "$(id -u):$(id -g)" "${env_args[@]}" "$SERVICE" claude --dangerously-skip-permissions "$@"
-exec docker compose -f "$COMPOSE_DIR/docker-compose.yaml" \
-    exec --user "$(id -u):$(id -g)" "${env_args[@]}" "$SERVICE" claude "$@"
+#
+# Herdr: it recognizes an agent by the pane's foreground argv[0], so a bash parent
+# named `claude` stays in the foreground and runs docker as its child. (Renaming
+# docker itself via `exec -a claude docker` breaks the docker CLI.) The sandbox
+# gets no herdr env or socket: host-side herdr drives it, nothing inside can.
+# exec -a claude bash -c 'docker "$@"; exit $?' claude compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+#     exec --user "$(id -u):$(id -g)" "${env_args[@]}" "$SERVICE" claude --dangerously-skip-permissions --settings "$ISO_SETTINGS_OVERLAY" "$@"
+exec -a claude bash -c 'docker "$@"; exit $?' claude compose -f "$COMPOSE_DIR/docker-compose.yaml" \
+  exec --user "$(id -u):$(id -g)" "${env_args[@]}" "$SERVICE" claude --settings "$ISO_SETTINGS_OVERLAY" "$@"
