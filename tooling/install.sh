@@ -103,6 +103,9 @@ for b in clang clang++ clang-cpp; do
     chmod 0755 "$prefix/bin/$b"
 done
 
+# Our own scripts (bin/): copied, not wrapped, so they keep working when the repo checkout moves.
+install -m 0755 "$here"/bin/* "$prefix/bin/"
+
 # Verify through env.sh itself, as both sides will use it.
 (
     TOOLING_ROOT=$prefix

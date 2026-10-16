@@ -38,7 +38,8 @@ Where this sits among the other zones: `docs/data-zones.md`.
   README.md
   env.sh        source this, host and container; sets the roots and PATH, then env/*.sh
   env/          one file per tool: rust.sh, go.sh, uv.sh, sccache.sh
-  bin/          the one PATH entry: links to every tool binary and rustup proxy
+  bin/          the one PATH entry: links to every tool binary and rustup proxy, plus
+                our scripts from tooling/bin/ (git-objects)
   config/       clang.cfg, the compiler config bin/clang and bin/clang++ use
   mise.toml     pinned versions
   mise.lock     resolved artifacts and their checksums
@@ -77,6 +78,16 @@ Same binaries plus same paths is what lets one artifact serve both sides. A venv
 interpreter's absolute path; with one `uv` and one `UV_PYTHON_INSTALL_DIR`, uv-managed Pythons live
 at the same path on host and container, so a single `.venv` works in both. If either side falls
 back to its own default (`~/.local/share/uv/python`), venvs built there dangle on the other.
+
+## Shared git objects
+
+`git-objects` keeps one copy of duckdb's git history for every clone, worktree and submodule
+under `$WORKSPACE_ROOT/src`: a bare store at `$WORKSPACE_ROOT/state/git-objects/duckdb.git` that
+fetches duckdb/duckdb and the fork and never prunes. Each duckdb object dir gets one absolute
+alternate to it, the same path on both sides. `git-objects fetch` refreshes the store,
+`git-objects scan` is the dry run, `git-objects sweep [path]` relinks and repacks; dbuild sweeps
+the repo it builds. New submodules borrow at init:
+`git submodule update --init --recursive --reference $WORKSPACE_ROOT/state/git-objects/duckdb.git`.
 
 ## Pinned versions
 

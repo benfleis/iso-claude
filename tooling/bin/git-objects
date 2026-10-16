@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# git-objects — one shared object store for every duckdb clone, worktree and submodule.
+#
+#   git-objects fetch               create the store if missing, fetch duckdb/duckdb + the fork
+#   git-objects scan  [path...]     dry run: per duckdb object dir, what sweep would change
+#   git-objects sweep [path...]     point each at the store, repack away what it holds, fsck
+#
+# A path inside a git repo means that repo: all of its git dir (so every worktree's submodules)
+# plus its initialized submodules. Any other path is searched for git dirs. Default: $SRCS.
+#
+# The store is a bare repo nobody works in, and it never prunes, so objects others borrow from
+# it can't vanish. Each duckdb object dir gets exactly one ABSOLUTE alternate to it: relative
+# paths break through symlinks, and chains through other checkouts break when those are gc'd or
+# removed. Before an old alternate is dropped, whatever the repo still needs from it and the
+# store lacks is copied in, so no ref, reflog or index entry loses its objects.
+set -euo pipefail
+
+STORE=${GIT_OBJECTS_STORE:-${WORKSPACE_ROOT:-/opt/workspace}/state/git-objects/duckdb.git}
+STORE_OBJ=$STORE/objects
+UPSTREAM_URL=https://github.com/duckdb/duckdb.git
+FORK_URL=https://github.com/benfleis/duckdb.git
+# duckdb's root commit: identifies a duckdb object dir that has no usable remote URL.
+ROOT_COMMIT=ba75d81601913782d28a3878707d135319f38bdd
+
+quiet=
+die() { echo "git-objects: $*" >&2; exit 1; }
+say() { [[ -n $quiet ]] || echo "$@"; }
+warn() { echo "git-objects: $*" >&2; }
+
+# A submodule git dir names its worktree in core.worktree, which may be gone (a deinit'd
+# submodule); pinning the work tree to the git dir itself keeps object-only commands working.
+g() { local d=$1; shift; git --git-dir="$d" --work-tree="$d" "$@"; }
+
+cmd_fetch() {
+    if [[ ! -d $STORE ]]; then
+        say "creating $STORE"
+        mkdir -p "$(dirname "$STORE")"
+        git init -q --bare "$STORE"
+    fi
+    git -C "$STORE" config gc.pruneExpire never
+    git -C "$STORE" config gc.cruftPacks true
+    git -C "$STORE" config fetch.writeCommitGraph true
+    git -C "$STORE" config remote.upstream.url "$UPSTREAM_URL"
+    git -C "$STORE" config remote.upstream.fetch '+refs/heads/*:refs/remotes/upstream/*'
+    git -C "$STORE" config remote.upstream.tagOpt --tags
+    git -C "$STORE" config remote.origin.url "$FORK_URL"
+    git -C "$STORE" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+    git -C "$STORE" config remote.origin.tagOpt --no-tags
+    # --prune drops refs only; with pruneExpire=never their objects stay.
+    git -C "$STORE" fetch ${quiet:+-q} --prune upstream
+    git -C "$STORE" fetch ${quiet:+-q} --prune origin
+}
+
+store_ok() {
+    [[ -d $STORE_OBJ ]] && git -C "$STORE" rev-parse -q --verify "$ROOT_COMMIT^{commit}" >/dev/null
+}
+
+# --- discovery -------------------------------------------------------------------------------
+
+find_objects_dirs() {
+    if command -v fd >/dev/null; then fd -u -t d '^objects$' "$1"
+    elif command -v fdfind >/dev/null; then fdfind -u -t d '^objects$' "$1"
+    else find "$1" -type d -name objects; fi
+}
+
+# Absolute git dirs (each owns an objects/), one per line.
+git_dirs_under() {
+    local o d
+    find_objects_dirs "$1" 2>/dev/null | while IFS= read -r o; do
+        d=$(cd "${o%/}/.." && pwd -P)
+        [[ -f $d/HEAD ]] && echo "$d"
+    done
+}
+
+git_dirs_for() {
+    local p=$1 common
+    if common=$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        && [[ -n $(git -C "$p" rev-parse --show-toplevel 2>/dev/null) ]]; then
+        git_dirs_under "$common"
+        git -C "$p" submodule foreach -q --recursive \
+            'git rev-parse --path-format=absolute --git-common-dir' 2>/dev/null \
+            | while IFS= read -r d; do (cd "$d" && pwd -P); done
+    else
+        git_dirs_under "$p"
+    fi
+}
+
+# Alternates of a git dir, each as an absolute path (relative ones resolve against objects/).
+alternates_of() {
+    local f=$1/objects/info/alternates line
+    [[ -f $f ]] || return 0
+    while IFS= read -r line; do
+        [[ -z $line || $line == \#* ]] && continue
+        [[ $line == /* ]] || line=$1/objects/$line
+        if [[ -d $line ]]; then (cd "$line" && pwd -P); else echo "$line (MISSING)"; fi
+    done < "$f"
+}
+
+is_duckdb() {
+    local d=$1 urls
+    urls=$(g "$d" config --get-regexp '^remote\..*\.url$' 2>/dev/null | cut -d' ' -f2-) || :
+    if [[ -n $urls ]]; then
+        grep -qE '[/:][^/]+/duckdb(\.git)?/?$' <<< "$urls"
+    else
+        g "$d" cat-file -e "$ROOT_COMMIT^{commit}" 2>/dev/null
+    fi
+}
+
+is_linked() {
+    [[ -f $1/objects/info/alternates && $(<"$1/objects/info/alternates") == "$STORE_OBJ" ]]
+}
+
+mb() { du -sm "$1/objects" | cut -f1; }
+
+# --- the safety check ------------------------------------------------------------------------
+
+# Objects $1 needs (refs of every worktree, reflogs, indexes) that the store's refs don't
+# already reach, walked with the store visible next to the current alternates.
+needed_objects() {
+    git -C "$STORE" for-each-ref --format='^%(objectname)' \
+        | GIT_ALTERNATE_OBJECT_DIRECTORIES=$STORE_OBJ \
+            g "$1" rev-list --objects --all --reflog --indexed-objects --stdin \
+        | cut -d' ' -f1
+}
+
+# Of the objects on stdin, those absent from $1's own objects plus alternate $2 (if given).
+# Reads through a shadow git dir whose objects are symlinks to $1's, so $1's current alternates
+# are out of view and nothing in $1 changes.
+missing_in() {
+    local d=$1 shadow e
+    shadow=$(mktemp -d "${TMPDIR:-/tmp}/git-objects.XXXXXX")
+    mkdir -p "$shadow/objects/info" "$shadow/refs"
+    echo 'ref: refs/heads/none' > "$shadow/HEAD"
+    for e in "$d"/objects/*; do
+        [[ ${e##*/} == info ]] || ln -s "$e" "$shadow/objects/${e##*/}"
+    done
+    [[ -z ${2-} ]] || echo "$2" > "$shadow/objects/info/alternates"
+    git --git-dir="$shadow" cat-file --batch-check='%(objectname) %(objecttype)' \
+        | awk '$2 == "missing" { print $1 }'
+    rm -rf "$shadow"
+}
+
+# The objects $1 would lose with the store as its only alternate.
+missing_after_relink() { missing_in "$1" "$STORE_OBJ"; }
+
+# --- scan / sweep ----------------------------------------------------------------------------
+
+declare -a duck=() other=()
+declare -A alts=()
+
+collect() {
+    local -a roots=("$@") list
+    (( ${#roots[@]} )) || roots=("${SRCS:-${WORKSPACE_ROOT:-/opt/workspace}/src}")
+    local r d
+    mapfile -t list < <(for r in "${roots[@]}"; do git_dirs_for "$r"; done | sort -u)
+    for d in "${list[@]}"; do
+        [[ $d == "$STORE" ]] && continue
+        alts[$d]=$(alternates_of "$d")
+        if [[ -f $d/shallow ]]; then
+            is_duckdb "$d" && warn "$d: shallow, skipped"
+            other+=("$d")
+        elif is_duckdb "$d"; then duck+=("$d")
+        else other+=("$d"); fi
+    done
+}
+
+# Non-duckdb git dirs that borrow from a duckdb dir about to be repacked (args) must not need it.
+check_dependents() {
+    local d a bad=0 n targets=" ${*/%//objects} "
+    for d in "${other[@]}"; do
+        [[ -n ${alts[$d]} ]] || continue
+        while IFS= read -r a; do
+            [[ $targets == *" $a "* ]] || continue
+            n=$(g "$d" rev-list --objects --all --reflog --indexed-objects 2>/dev/null \
+                | cut -d' ' -f1 | missing_in "$d" | wc -l) || n=unknown
+            if [[ $n == 0 ]]; then
+                say "  note: $d borrows from $a but needs nothing from it; left alone"
+            else
+                warn "$d borrows $n objects from duckdb dir $a; relink it by hand first"
+                bad=1
+            fi
+        done <<< "${alts[$d]}"
+    done
+    return $bad
+}
+
+cmd_scan() {
+    store_ok || die "no store at $STORE (run: git-objects fetch)"
+    collect "$@"
+    local d need miss own nown est cur total_cur=0 total_est=0
+    printf '%-70s %7s %7s %7s %7s  %s\n' "object dir" "MB now" "MB est" "own" "missing" "alternates now -> planned"
+    for d in "${duck[@]}"; do
+        cur=$(mb "$d")
+        if is_linked "$d"; then
+            printf '%-70s %7s %7s %7s %7s  %s\n' "$d" "$cur" "-" "-" "-" "linked"
+            continue
+        fi
+        if ! need=$(needed_objects "$d" 2>/dev/null); then
+            printf '%-70s %7s %7s %7s %7s  %s\n' "$d" "$cur" "?" "?" "?" "BROKEN: cannot walk its refs; skipped by sweep"
+            continue
+        fi
+        miss=$(missing_after_relink "$d" <<< "$need" | grep -c .) || :
+        # Rough: the objects the store lacks, at their current on-disk size.
+        own=$(git -C "$STORE" cat-file --batch-check='%(objectname) %(objecttype)' <<< "$need" \
+            | awk '$2 == "missing" { print $1 }')
+        nown=$(grep -c . <<< "$own") || :
+        est=$(g "$d" cat-file --batch-check='%(objectsize:disk)' <<< "$own" \
+            | awk '$1 ~ /^[0-9]+$/ { s += $1 } END { printf "%d", s / 1048576 }')
+        total_cur=$(( total_cur + cur )); total_est=$(( total_est + est ))
+        printf '%-70s %7s %7s %7s %7s  [%s] -> [%s]\n' "$d" "$cur" "$est" "$nown" "$miss" \
+            "$(paste -sd' ' <<< "${alts[$d]}")" "$STORE_OBJ"
+    done
+    say "unlinked total: ${total_cur} MB now, ~${total_est} MB after (~$(( total_cur - total_est )) MB saved)"
+    say "('own': needed objects the store lacks, kept locally; 'missing': of those, the ones"
+    say " reachable only through an old alternate, which sweep copies in before relinking)"
+    local -a todo=()
+    for d in "${duck[@]}"; do is_linked "$d" || todo+=("$d"); done
+    check_dependents "${todo[@]}" || :
+}
+
+relink() {
+    local d=$1 alt=$1/objects/info/alternates need miss
+    need=$(needed_objects "$d") || { warn "$d: cannot walk its refs; skipped"; return 1; }
+    miss=$(missing_after_relink "$d" <<< "$need")
+    if [[ -n $miss ]]; then
+        say "  copying $(grep -c . <<< "$miss") objects only reachable through the old alternates"
+        g "$d" pack-objects -q "$d/objects/pack/pack" <<< "$miss" >/dev/null
+    fi
+    [[ -f $alt ]] && cp -p "$alt" "$alt.pre-git-objects"
+    echo "$STORE_OBJ" > "$alt.tmp" && mv -f "$alt.tmp" "$alt"
+    # Re-walk in the new view: a ref may have moved since, and only a full walk proves it whole.
+    miss=unwalkable
+    need=$(needed_objects "$d" 2>/dev/null) && miss=$(missing_after_relink "$d" <<< "$need")
+    if [[ -n $miss ]]; then
+        warn "$d: still missing objects after relink; old alternates restored"
+        if [[ -f $alt.pre-git-objects ]]; then mv -f "$alt.pre-git-objects" "$alt"; else rm -f "$alt"; fi
+        return 1
+    fi
+}
+
+cmd_sweep() {
+    store_ok || die "no store at $STORE (run: git-objects fetch)"
+    collect "$@"
+    local d before after out rc=0
+    local -a todo=() done_=()
+    for d in "${duck[@]}"; do is_linked "$d" || todo+=("$d"); done
+    (( ${#todo[@]} )) || return 0
+    check_dependents "${todo[@]}" || die "a non-duckdb repo borrows from a duckdb dir; nothing changed"
+    # Relink everything before repacking anything: a dir may still borrow from another one.
+    for d in "${todo[@]}"; do
+        say "relink $d"
+        if relink "$d"; then done_+=("$d"); else rc=1; fi
+    done
+    for d in "${done_[@]}"; do
+        before=$(mb "$d")
+        say "repack $d"
+        g "$d" repack -a -d -l -q
+        if ! out=$(g "$d" fsck --connectivity-only --no-dangling --no-progress 2>&1) || [[ -n $out ]]; then
+            warn "$d: fsck failed:"; echo "$out" >&2; rc=1
+        fi
+        after=$(mb "$d")
+        say "  ${before} MB -> ${after} MB"
+    done
+    return $rc
+}
+
+case ${1-} in
+    -q) quiet=1; shift ;;
+esac
+case ${1-} in
+    fetch) shift; cmd_fetch "$@" ;;
+    scan) shift; cmd_scan "$@" ;;
+    sweep) shift; cmd_sweep "$@" ;;
+    *) sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+esac
