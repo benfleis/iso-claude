@@ -37,8 +37,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   dnsutils \
   nano \
   vim \
-  cmake \
-  ninja-build \
   g++ \
   lldb \
   clangd \
@@ -173,8 +171,8 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 # sources), then personal config, which may override it. zsh history lives in the
 # workspace too (HOME is not mounted). The workspace root is read-only by design
 # (nothing lands there unplaced): config lives in config/, history (state) in state/.
-RUN printf '\n[ -f /opt/tooling/env.sh ] && . /opt/tooling/env.sh\n[ -f /opt/workspace/config/zsh/env-local ] && source /opt/workspace/config/zsh/env-local\n' >> /home/iso-claude/.zshenv \
-  && printf '\n[ -f /opt/workspace/config/zsh/rc-local ] && source /opt/workspace/config/zsh/rc-local\nexport HISTFILE=/opt/workspace/state/zsh_history\n' >> /home/iso-claude/.zshrc
+RUN printf '\n[ -f /opt/tooling/env.sh ] && . /opt/tooling/env.sh\n[ -f /opt/workspace/config/zsh/env-local.zsh ] && source /opt/workspace/config/zsh/env-local.zsh\n' >> /home/iso-claude/.zshenv \
+  && printf '\n[ -f /opt/workspace/config/zsh/rc-local.zsh ] && source /opt/workspace/config/zsh/rc-local.zsh\nexport HISTFILE=/opt/workspace/state/zsh_history\n' >> /home/iso-claude/.zshrc
 
 # Git config matters, link to the workspace
 RUN mkdir -p /home/iso-claude/.config && env -C /home/iso-claude/.config ln -sf /opt/workspace/config/git

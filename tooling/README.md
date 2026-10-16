@@ -13,7 +13,10 @@ This directory in the iso-claude repo is the source; `install.sh` puts it in `/o
   mold. The host is Amazon Linux 2023 and the container Ubuntu, so their distro compilers differ;
   conda's clang brings its own sysroot (glibc 2.34, matching the host) and libstdc++, so both
   sides compile against identical headers and container-built binaries run on the host. C++
-  binaries get an RPATH into the clangxx install dir: rebuild after bumping it. Remaining distro
+  binaries get an RPATH into the clangxx install dir: rebuild after bumping it. Both `clang` and
+  `clang++` come from the one `conda:clangxx` env and run with `config/clang.cfg` instead of
+  conda's default config, which would put the env's own headers (GNU libiconv, zstd, ICU) ahead
+  of the sysroot. Remaining distro
   tools (gcc, cmake, ninja, make, the `-dev` headers) stay system packages on each side.
 - **Owned by root, installed and updated on the host with `sudo`.** Not writable by the host user,
   so no session, on the host or in the container, can alter binaries the host executes.
@@ -36,6 +39,7 @@ Where this sits among the other zones: `docs/data-zones.md`.
   env.sh        source this, host and container; sets the roots and PATH, then env/*.sh
   env/          one file per tool: rust.sh, go.sh, uv.sh, sccache.sh
   bin/          the one PATH entry: links to every tool binary and rustup proxy
+  config/       clang.cfg, the compiler config bin/clang and bin/clang++ use
   mise.toml     pinned versions
   mise.lock     resolved artifacts and their checksums
   mise/         mise itself (off PATH) and the installed uv, sccache, go

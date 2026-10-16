@@ -97,7 +97,7 @@ Claude Code) resolve normally. What must persist is decoupled from `HOME`:
   are one shared, root-owned copy in `/opt/tooling`, mounted read-only, with one
   env file both sides source; see [tooling/README.md](tooling/README.md).
 - **Your personal shell config** lives in the bind-mounted workspace as
-  `/opt/workspace/config/zsh/env-local` and `/opt/workspace/config/zsh/rc-local`,
+  `/opt/workspace/config/zsh/env-local.zsh` and `/opt/workspace/config/zsh/rc-local.zsh`,
   sourced by the baked dotfiles if present — persistent and host-editable
   without rebuilding. Git identity is `config/git` (`~/.config/git` links to
   it); zsh history is `state/zsh_history`.
