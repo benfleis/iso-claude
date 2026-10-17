@@ -66,18 +66,39 @@ sources `env/<tool>.sh`, which derive everything else from the roots.
 | `env/uv.sh` | `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR` |
 | `env/sccache.sh` | `SCCACHE_DIR` |
 
-On the host, add one line to your shell startup and set none of these yourself:
+On the host, source it **last** in your shell startup, after anything else that edits `PATH` or
+sets these variables, and set none of them yourself. `env.sh` leaves `PATH` alone when
+`$TOOLING_ROOT/bin` is already on it, so move that entry to the front first:
 
 ```sh
+path=( ${path:#/opt/tooling/bin} )   # zsh
 . /opt/tooling/env.sh
 ```
 
-Never source the workspace's `config/zsh/*` on the host instead: the container can edit those.
+Anything ahead of `bin/` (a user mise, `~/.local/bin` shims) leaks host-only paths into build
+trees, and the container then refuses them. With a user mise on the host, also set
+`MISE_IGNORED_CONFIG_PATHS=/opt/tooling`: this directory's `mise.toml` belongs to `install.sh`,
+and without it any mise shim run with cwd under `/opt/tooling` stops at a trust prompt.
+
+The host may source the workspace's `config/zsh/*` too: the container mounts `config/` read-only,
+so a session cannot plant anything there.
 
 Same binaries plus same paths is what lets one artifact serve both sides. A venv records its
 interpreter's absolute path; with one `uv` and one `UV_PYTHON_INSTALL_DIR`, uv-managed Pythons live
 at the same path on host and container, so a single `.venv` works in both. If either side falls
-back to its own default (`~/.local/share/uv/python`), venvs built there dangle on the other.
+back to its own default (`~/.local/share/uv/python`), venvs built there dangle on the other. The
+same goes for a distro Python (`/usr/bin/python3` differs per OS), so uv is told to use only its
+own Pythons: `UV_PYTHON_PREFERENCE=only-managed` (set in the workspace's `config/zsh/env-local.zsh`).
+
+## Shared git objects
+
+`git-objects` keeps one copy of duckdb's git history for every clone, worktree and submodule
+under `$WORKSPACE_ROOT/src`: a bare store at `$WORKSPACE_ROOT/state/git-objects/duckdb.git` that
+fetches duckdb/duckdb and the fork and never prunes. Each duckdb object dir gets one absolute
+alternate to it, the same path on both sides. `git-objects fetch` refreshes the store,
+`git-objects scan` is the dry run, `git-objects sweep [path]` relinks and repacks; dbuild sweeps
+the repo it builds. New submodules borrow at init:
+`git submodule update --init --recursive --reference $WORKSPACE_ROOT/state/git-objects/duckdb.git`.
 
 ## Shared git objects
 
